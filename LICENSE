@@ -1,0 +1,42 @@
+MIT License
+
+Copyright (c) 2026 Heart Star Nintendo Switch port contributors
+Copyright (c) 2026 cavazzatommaso (Level Devil fork)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---------------------------------------------------------------------------
+
+This repository contains only the port: a loader and compatibility layer.
+
+Heart Star itself -- its code, artwork, audio and data -- is the
+property of Adventure Islands and is NOT included or redistributed here. The
+port loads those files from a copy of the game that the user provides.
+
+source/so_util.c follows the design of the so_util.c used by the Android
+wrapper ports for the PS Vita and Nintendo Switch (MIT licensed; Andy Nguyen
+"TheFloW", Rinnegatamante, fgsfds and the ports built on their work). It was
+rewritten for this port around PT_DYNAMIC and DT_HASH.
+
+source/sdl_procs.h is generated from the function list in SDL 2.0.12's
+src/dynapi/SDL_dynapi_procs.h (SDL is zlib licensed, Copyright (C) 1997-2020
+Sam Lantinga). It contains function names only, no SDL code.
+
+The port links against devkitPro's libnx, switch-sdl2 and mesa packages, each
+under its own license.
