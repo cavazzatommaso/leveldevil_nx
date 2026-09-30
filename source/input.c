@@ -3,7 +3,8 @@
  * Defold's NativeActivity glue reads AInputQueue: key events go through its
  * Android keycode table to Defold's keys (DPAD_LEFT is key-left, SPACE is
  * key-space...), touch goes to touch/mouse. So the pad presses keys --
- * config.txt says which input presses which -- and the touch screen is passed
+ * config.txt says which input presses which; a second controller gets player
+ * 2's keys -- and the touch screen is passed
  * through as a touchscreen, with every finger in every event, the way
  * Android reports multi-touch.
  *
@@ -24,8 +25,14 @@
 #include "nativewindow.h"
 #include "nx_pointer.h"
 
-/* android/keycodes.h, in PB_C_* order */
-static const int KEYCODE[PB_C_COUNT] = {
+/* android/keycodes.h, in PB_C_* order.
+ *
+ * The game's own input binding (game.input_bindingc) is the PC keyboard
+ * layout: player 1 on WASD + Space, player 2 on the arrow keys, and
+ * single-player answers to either. So one controller sends the arrows, and
+ * with a second one connected controller 1 becomes WASD and controller 2 the
+ * arrows -- the same config.txt map for both. */
+static const int KEYS_ARROWS[PB_C_COUNT] = {
     21,     /* DPAD_LEFT  */
     22,     /* DPAD_RIGHT */
     19,     /* DPAD_UP    */
@@ -34,23 +41,48 @@ static const int KEYCODE[PB_C_COUNT] = {
     66,     /* ENTER      */
     111,    /* ESCAPE     */
 };
+static const int KEYS_WASD[PB_C_COUNT] = {
+    29,     /* A      */
+    32,     /* D      */
+    51,     /* W      */
+    47,     /* S      */
+    62,     /* SPACE  */
+    66,     /* ENTER  */
+    111,    /* ESCAPE */
+};
 
 #define MAX_FINGERS   8
 #define CURSOR_ID     9
 #define STICK_MAX     32767.0f
 #define STICK_ON      0.4f
 
-static PadState g_pad;
+static PadState g_pad;     /* player 1: handheld or controller 1 */
+static PadState g_pad2;    /* player 2 */
 static HidTouchScreenState g_touch;
-static int g_key_down[PB_C_COUNT];
+static int g_two_players;
+
+typedef struct {
+    PadState  *pad;
+    const int *keys;
+    int        down[PB_C_COUNT];
+} Player;
+
+static Player g_players[2] = {
+    { &g_pad, KEYS_ARROWS, { 0 } },
+    { &g_pad2, KEYS_ARROWS, { 0 } },
+};
 
 /* Every pointer that is down: real fingers by libnx id, plus the cursor. */
 static struct { int active; u32 nx_id; float x, y; } g_ptr[MAX_FINGERS + 2];
 
 void input_init(void)
 {
-    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+    padConfigureInput(2, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&g_pad);
+    padInitialize(&g_pad2, HidNpadIdType_No2);
+    /* Horizontal, so the Controllers applet shows single Joy-Cons sideways.
+     * The reported data is raw either way; read_pad does the rotation. */
+    hidSetNpadJoyHoldType(HidNpadJoyHoldType_Horizontal);
     hidInitializeTouchScreen();
     LOGI("input: pad -> keys, touch %s, cursor %s", g_cfg.touch ? "on" : "off",
          g_cfg.cursor ? "on ZL+ZR" : "off");
@@ -167,36 +199,84 @@ static float stick_norm(s32 v)
     return (f > 0 ? (f - dz) : (f + dz)) / (1.0f - dz);
 }
 
-static unsigned axis_state(void)
+/* One controller's buttons and main stick, as if it were a full controller.
+ * A single Joy-Con is held sideways, rail up, so its stick and face buttons
+ * are rotated a quarter turn: the left one counter-clockwise, the right one
+ * clockwise. Everything else is read as-is. */
+typedef struct { u64 held; float x, y; } PadRead;
+
+static PadRead read_pad(PadState *pad)
 {
-    HidAnalogStickState l = padGetStickPos(&g_pad, 0), r = padGetStickPos(&g_pad, 1);
-    float lx = stick_norm(l.x), ly = stick_norm(l.y), rx = stick_norm(r.x), ry = stick_norm(r.y);
+    u32 style = padGetStyleSet(pad);
+    u64 raw = padGetButtons(pad), h = 0;
+    PadRead r;
+
+    if (style & (HidNpadStyleTag_NpadFullKey | HidNpadStyleTag_NpadHandheld | HidNpadStyleTag_NpadJoyDual) ||
+        !(style & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight))) {
+        HidAnalogStickState l = padGetStickPos(pad, 0);
+        r.held = raw;
+        r.x = stick_norm(l.x);
+        r.y = stick_norm(l.y);
+        return r;
+    }
+    if (style & HidNpadStyleTag_NpadJoyLeft) {
+        HidAnalogStickState st = padGetStickPos(pad, 0);
+        if (raw & HidNpadButton_Down)    h |= HidNpadButton_A;
+        if (raw & HidNpadButton_Right)   h |= HidNpadButton_X;
+        if (raw & HidNpadButton_Up)      h |= HidNpadButton_Y;
+        if (raw & HidNpadButton_Left)    h |= HidNpadButton_B;
+        if (raw & HidNpadButton_LeftSL)  h |= HidNpadButton_L;
+        if (raw & HidNpadButton_LeftSR)  h |= HidNpadButton_R;
+        h |= raw & (HidNpadButton_Minus | HidNpadButton_StickL | HidNpadButton_ZL);
+        r.x = -stick_norm(st.y);
+        r.y = stick_norm(st.x);
+    } else {
+        HidAnalogStickState st = padGetStickPos(pad, 1);
+        if (raw & HidNpadButton_X)       h |= HidNpadButton_A;
+        if (raw & HidNpadButton_A)       h |= HidNpadButton_B;
+        if (raw & HidNpadButton_B)       h |= HidNpadButton_Y;
+        if (raw & HidNpadButton_Y)       h |= HidNpadButton_X;
+        if (raw & HidNpadButton_RightSL) h |= HidNpadButton_L;
+        if (raw & HidNpadButton_RightSR) h |= HidNpadButton_R;
+        h |= raw & (HidNpadButton_Plus | HidNpadButton_StickR | HidNpadButton_ZR);
+        r.x = stick_norm(st.y);
+        r.y = -stick_norm(st.x);
+    }
+    r.held = h;
+    return r;
+}
+
+static unsigned axis_state(const PadRead *p)
+{
     unsigned a = 0;
-    if (lx < -STICK_ON) a |= PB_AX_L_LEFT;
-    if (lx >  STICK_ON) a |= PB_AX_L_RIGHT;
-    if (ly >  STICK_ON) a |= PB_AX_L_UP;        /* libnx y is up */
-    if (ly < -STICK_ON) a |= PB_AX_L_DOWN;
-    if (rx < -STICK_ON) a |= PB_AX_R_LEFT;
-    if (rx >  STICK_ON) a |= PB_AX_R_RIGHT;
-    if (ry >  STICK_ON) a |= PB_AX_R_UP;
-    if (ry < -STICK_ON) a |= PB_AX_R_DOWN;
+    if (p->x < -STICK_ON) a |= PB_AX_L_LEFT;
+    if (p->x >  STICK_ON) a |= PB_AX_L_RIGHT;
+    if (p->y >  STICK_ON) a |= PB_AX_L_UP;        /* libnx y is up */
+    if (p->y < -STICK_ON) a |= PB_AX_L_DOWN;
     return a;
 }
 
-static void set_keys(const int want[PB_C_COUNT])
+static void set_keys(Player *pl, const int want[PB_C_COUNT])
 {
     int c;
     for (c = 0; c < PB_C_COUNT; c++) {
-        if (want[c] == g_key_down[c])
+        if (want[c] == pl->down[c])
             continue;
-        g_key_down[c] = want[c];
-        lp_push_key(KEYCODE[c], want[c]);
+        pl->down[c] = want[c];
+        lp_push_key(pl->keys[c], want[c]);
     }
 }
 
-static void pump_keys(u64 held)
+static void release_keys(Player *pl)
 {
-    unsigned bits = 0, axes = axis_state();
+    static const int none[PB_C_COUNT];
+    set_keys(pl, none);
+}
+
+static void pump_keys(Player *pl, const PadRead *p)
+{
+    u64 held = p->held;
+    unsigned bits = 0, axes = axis_state(p);
     int want[PB_C_COUNT], c;
     size_t i;
 
@@ -207,7 +287,30 @@ static void pump_keys(u64 held)
         want[c] = (g_cfg.map_btn[c] & bits) || (g_cfg.map_axis[c] & axes);
     if (want[PB_C_LEFT] && want[PB_C_RIGHT])
         want[PB_C_LEFT] = want[PB_C_RIGHT] = 0;
-    set_keys(want);
+    /* Space is player 1's jump in the game's bindings whoever presses it, so
+     * player 2's space button jumps with player 2's key (up) instead. */
+    if (g_two_players && pl == &g_players[1]) {
+        want[PB_C_UP] |= want[PB_C_SPACE];
+        want[PB_C_SPACE] = 0;
+    }
+    set_keys(pl, want);
+}
+
+/* Controller 2 connected or gone: switch layouts with every key released, so
+ * nothing stays held across the change. */
+static void follow_players(void)
+{
+    int two = padIsConnected(&g_pad2);
+    if (two == g_two_players)
+        return;
+    release_keys(&g_players[0]);
+    release_keys(&g_players[1]);
+    g_two_players = two;
+    g_players[0].keys = two ? KEYS_WASD : KEYS_ARROWS;
+    LOGI("input: %s", two ? "two controllers: 1 = WASD (player 1), 2 = arrows (player 2)"
+                          : "one controller: arrows");
+    LOGI("input: controller styles 0x%x / 0x%x (0x8 left Joy-Con, 0x10 right Joy-Con)",
+         (unsigned)padGetStyleSet(&g_pad), (unsigned)padGetStyleSet(&g_pad2));
 }
 
 /* -------------------------------------------------------------- cursor --- */
@@ -216,8 +319,9 @@ static int g_chord_held, g_cursor_tapping;
 static u64 g_cursor_tick;
 
 /* 1 while the cursor is up: the caller leaves the keys alone. */
-static int pump_cursor(u64 held)
+static int pump_cursor(const PadRead *p)
 {
+    u64 held = p->held;
     const u64 chord = HidNpadButton_ZL | HidNpadButton_ZR;
     int both = (held & chord) == chord;
     float cx, cy, dt;
@@ -226,9 +330,8 @@ static int pump_cursor(u64 held)
     if (!g_cfg.cursor)
         return 0;
     if (both && !g_chord_held) {
-        static const int none[PB_C_COUNT];
         nxp_set_visible(!nxp_visible());
-        set_keys(none);
+        release_keys(&g_players[0]);
         if (g_cursor_tapping) {
             ptr_up(CURSOR_ID);
             g_cursor_tapping = 0;
@@ -246,12 +349,8 @@ static int pump_cursor(u64 held)
     g_cursor_tick = now;
     if (dt > 0.1f)
         dt = 0.1f;
-    {
-        HidAnalogStickState ls = padGetStickPos(&g_pad, 0);
-        float sx = stick_norm(ls.x), sy = stick_norm(ls.y);
-        if (sx != 0.0f || sy != 0.0f)
-            nxp_move(sx * (float)g_cfg.cursor_speed * dt, -sy * (float)g_cfg.cursor_speed * dt);
-    }
+    if (p->x != 0.0f || p->y != 0.0f)
+        nxp_move(p->x * (float)g_cfg.cursor_speed * dt, -p->y * (float)g_cfg.cursor_speed * dt);
     nxp_pos(&cx, &cy);
     {
         int want = (held & HidNpadButton_A) != 0;
@@ -269,20 +368,87 @@ static int pump_cursor(u64 held)
     return 1;
 }
 
+/* ------------------------------------------------- controllers applet --- */
+/* The system "Controllers" screen games show when the setup changes: pick one
+ * or two players, pair Joy-Cons or use them separately. It opens by itself
+ * when the Joy-Cons come off the console, and on L + R held for a second
+ * (SL + SR on a sideways Joy-Con). It blocks until closed, which is fine on
+ * this thread -- the game keeps running on its own. */
+#define APPLET_HOLD_NS 1000000000ULL
+
+static int g_handheld_prev = -1;
+static u64 g_lr_since;
+
+static void show_controllers(const char *why)
+{
+    HidLaControllerSupportArg arg;
+    HidLaControllerSupportResultInfo info;
+    Result rc;
+
+    release_keys(&g_players[0]);
+    release_keys(&g_players[1]);
+    hidLaCreateControllerSupportArg(&arg);
+    arg.hdr.player_count_min = 1;
+    arg.hdr.player_count_max = 2;
+    arg.hdr.enable_take_over_connection = 1;
+    arg.hdr.enable_left_justify = 1;
+    arg.hdr.enable_permit_joy_dual = 1;
+    memset(&info, 0, sizeof(info));
+    LOGI("input: opening the Controllers applet (%s)", why);
+    rc = hidLaShowControllerSupport(&info, &arg);
+    if (R_FAILED(rc))
+        LOGI("input: Controllers applet failed 0x%x", rc);
+    else
+        LOGI("input: Controllers applet closed, %d player(s)", info.player_count);
+}
+
+static void pump_applet(const PadRead *p1, const PadRead *p2)
+{
+    const u64 lr = HidNpadButton_L | HidNpadButton_R;
+    int handheld = hidGetNpadStyleSet(HidNpadIdType_Handheld) != 0;
+    int held = (p1->held & lr) == lr || (p2 && (p2->held & lr) == lr);
+
+    if (g_handheld_prev == 1 && !handheld) {
+        g_handheld_prev = handheld;
+        show_controllers("Joy-Cons detached");
+        return;
+    }
+    g_handheld_prev = handheld;
+
+    if (!held) {
+        g_lr_since = 0;
+        return;
+    }
+    if (!g_lr_since) {
+        g_lr_since = armGetSystemTick();
+    } else if (armTicksToNs(armGetSystemTick() - g_lr_since) >= APPLET_HOLD_NS) {
+        g_lr_since = 0;
+        show_controllers("L + R held");
+    }
+}
+
 /* ---------------------------------------------------------------- pump --- */
 
 void input_pump(void)
 {
+    PadRead p1, p2;
     u64 held;
 
     padUpdate(&g_pad);
-    held = padGetButtons(&g_pad);
+    p1 = read_pad(&g_pad);
+    held = p1.held;
     if (g_cfg.exit_combo && (held & HidNpadButton_Plus) && (held & HidNpadButton_Minus)) {
         LOGI("input: + and - held; quitting");
         pb_request_exit(0);
         return;
     }
+    padUpdate(&g_pad2);
+    p2 = read_pad(&g_pad2);
+    pump_applet(&p1, padIsConnected(&g_pad2) ? &p2 : NULL);
+    follow_players();
     pump_touch();
-    if (!pump_cursor(held))
-        pump_keys(held);
+    if (!pump_cursor(&p1))
+        pump_keys(&g_players[0], &p1);
+    if (g_two_players)
+        pump_keys(&g_players[1], &p2);
 }

@@ -24,7 +24,7 @@ INCLUDES    := source
 
 APP_TITLE   := Level Devil
 APP_AUTHOR  := cavazzatommaso, after ChanseyIsTheBest
-APP_VERSION := 2.0.0
+APP_VERSION := 2.1.0
 
 # The icon is optional: without icon.jpg, elf2nro uses libnx's default.
 APP_ICON    := $(wildcard $(TOPDIR)/icon.jpg)

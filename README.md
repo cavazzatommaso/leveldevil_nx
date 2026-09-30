@@ -45,6 +45,16 @@ to `save/` next to the `.nro`.
 | ZL + ZR | On-screen cursor (stick moves, A taps) |
 | Touchscreen | Touch |
 
+### Two players
+
+Level Devil's 2-player mode works with two controllers: controller 1 is
+player 1, controller 2 is player 2, each with the same button map. A single
+Joy-Con per player works held sideways.
+
+The system **Controllers** screen opens when the Joy-Cons are taken off the
+console, and whenever L + R is held for a second (SL + SR on a sideways
+Joy-Con), to choose one or two players and pair or split Joy-Cons.
+
 Everything is remappable in `config.txt`. `log_level = 1` writes
 `leveldevil.log` next to the `.nro`; `frame_stats = 1` adds an fps line every
 5 seconds.
