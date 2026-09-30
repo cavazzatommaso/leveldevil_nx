@@ -22,6 +22,7 @@
 #include <switch.h>
 
 #include "bionic.h"
+#include "looper.h"
 #include "log.h"
 #include "paths.h"
 
@@ -94,6 +95,29 @@ static int is_virtual_system_path(const char *p)
            !strncmp(p, "/vendor/", 8);
 }
 
+/* /dev/urandom: a fresh file of CSPRNG bytes in save/, opened read-only.
+ * ponytail: 64 KB per open, plenty for seeding; a real device node would
+ * only matter for a reader that streams megabytes. */
+static const char *urandom_file(void)
+{
+    static char path[1100];
+    static u8 buf[64 * 1024];
+    FILE *f;
+    snprintf(path, sizeof(path), "%s/urandom.bin", paths_save());
+    csrngGetRandomBytes(buf, sizeof(buf));
+    f = fopen(path, "wb");
+    if (!f)
+        return NULL;
+    fwrite(buf, 1, sizeof(buf), f);
+    fclose(f);
+    return path;
+}
+
+static int is_urandom(const char *p)
+{
+    return !strcmp(p, "/dev/urandom") || !strcmp(p, "/dev/random");
+}
+
 FILE *bx_fopen(const char *path, const char *mode)
 {
     char p[1024], m[8];
@@ -103,6 +127,10 @@ FILE *bx_fopen(const char *path, const char *mode)
         return NULL;
     }
     path_translate(path, p, sizeof(p));
+    if (is_urandom(p)) {
+        const char *r = urandom_file();
+        return r ? fopen(r, "rb") : NULL;
+    }
     if (is_virtual_system_path(p)) {
         LOGD("fopen(%s): Android system path, not available", p);
         errno = LX_ENOENT;
@@ -317,6 +345,10 @@ int bx_open(const char *path, int flags, int mode)
         return -1;
     }
     path_translate(path, p, sizeof(p));
+    if (is_urandom(p)) {
+        const char *r = urandom_file();
+        return r ? open(r, O_RDONLY) : -1;
+    }
     if (is_virtual_system_path(p)) {
         errno = LX_ENOENT;
         return -1;
@@ -346,6 +378,8 @@ int bx_open(const char *path, int flags, int mode)
 
 int bx_close(int fd)
 {
+    if (lp_is_fd(fd))
+        return lp_close(fd);
     if (fd >= 0 && fd <= 2)
         return 0;
     return close(fd);
@@ -354,6 +388,8 @@ int bx_close(int fd)
 long bx_read(int fd, void *buf, size_t n)
 {
     long r;
+    if (lp_is_fd(fd))
+        return lp_read(fd, buf, n);
     if (fd == 0)
         return 0;
     r = read(fd, buf, n);
@@ -365,6 +401,8 @@ long bx_read(int fd, void *buf, size_t n)
 long bx_write(int fd, const void *buf, size_t n)
 {
     long r;
+    if (lp_is_fd(fd))
+        return lp_write(fd, buf, n);
     if (fd == 1 || fd == 2) {
         sink_write(fd, buf, n);
         return (long)n;
@@ -489,11 +527,10 @@ int bx_dup2(int a, int b)
     return -1;
 }
 
+/* The NativeActivity glue's command channel; see looper.c. */
 int bx_pipe(int fds[2])
 {
-    (void)fds;
-    errno = LX_EMFILE;
-    return -1;
+    return lp_pipe(fds);
 }
 
 /* ---------------------------------------------------------- directories -- */
@@ -718,6 +755,12 @@ void *bx_mmap(void *addr, size_t len, int prot, int flags, int fd, long off)
         errno = LX_EINVAL;
         return (void *)-1;
     }
+    /* Hints are ignored and ordinary heap memory is returned. LuaJIT hints
+     * both its allocator (which just needs memory) and its machine-code
+     * area; for the latter it checks the block is within +-128 MB of its
+     * own code, which heap memory here never is, so it gives up on the JIT
+     * and stays in the interpreter. mprotect refuses PROT_EXEC regardless.
+     * ponytail: JIT off; libnx jit + a real mprotect would bring it back. */
     if (flags & LX_MAP_FIXED) {
         LOGE("mmap: MAP_FIXED at %p not supported", addr);
         errno = LX_ENOMEM;
@@ -755,6 +798,17 @@ void *bx_mmap(void *addr, size_t len, int prot, int flags, int fd, long off)
     g_maps = e;
     mutexUnlock(&g_maps_lock);
     return mem;
+}
+
+int bx_mprotect(void *addr, size_t len, int prot)
+{
+    (void)addr; (void)len;
+    if (prot & 4) {                              /* PROT_EXEC */
+        LOG_ONCE("!! mprotect(PROT_EXEC) refused");
+        errno = LX_EACCES;
+        return -1;
+    }
+    return 0;                                    /* heap stays read/write */
 }
 
 int bx_munmap(void *addr, size_t len)

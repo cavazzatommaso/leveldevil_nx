@@ -1,12 +1,11 @@
 #---------------------------------------------------------------------------------
-# Level Devil -- Nintendo Switch homebrew wrapper port
+# Level Devil (Defold build) -- Nintendo Switch homebrew wrapper port
 #
-# Runs the game's own Android ARM64 libraries (liblime.so, libApplicationMain.so)
-# on the Switch. Contains NO game code or assets: stage them from an APK you own,
+# Runs the game's own Android ARM64 engine (libLevelDevil.so) on the Switch. Contains NO game code or assets: stage them from an APK you own,
 # see README.md.
 #
 # Requires devkitA64 and these devkitPro packages:
-#   (dkp-)pacman -S switch-dev switch-sdl2 switch-mesa switch-libdrm_nouveau \
+#   (dkp-)pacman -S switch-dev switch-mesa switch-libdrm_nouveau \
 #                  switch-libpng switch-zlib
 #---------------------------------------------------------------------------------
 .SUFFIXES:
@@ -24,21 +23,22 @@ SOURCES     := source
 INCLUDES    := source
 
 APP_TITLE   := Level Devil
-APP_AUTHOR  := ChanseyIsTheBest, tommaso (Level Devil fork)
-APP_VERSION := 1.0.0
+APP_AUTHOR  := cavazzatommaso, after ChanseyIsTheBest
+APP_VERSION := 2.0.0
 
-# Optional; without icon.jpg elf2nro uses the libnx default. Not committed (game artwork).
+# The icon is optional: without icon.jpg, elf2nro uses libnx's default.
 APP_ICON    := $(wildcard $(TOPDIR)/icon.jpg)
 
 #---------------------------------------------------------------------------------
 # Fail early, and name the packages, if the portlibs are missing.
 #---------------------------------------------------------------------------------
-REQUIRED_HEADERS := $(PORTLIBS)/include/SDL2/SDL.h $(PORTLIBS)/include/EGL/egl.h \
+# No SDL: the engine talks to EGL/GLES (switch-mesa) directly.
+REQUIRED_HEADERS := $(PORTLIBS)/include/EGL/egl.h $(PORTLIBS)/include/GLES2/gl2.h \
                     $(PORTLIBS)/include/png.h
 MISSING := $(foreach h,$(REQUIRED_HEADERS),$(if $(wildcard $(h)),,$(h)))
 ifneq ($(strip $(MISSING)),)
 $(warning Missing devkitPro portlibs headers: $(MISSING))
-$(warning Install them with:  dkp-pacman -S switch-sdl2 switch-mesa switch-libdrm_nouveau switch-libpng switch-zlib)
+$(warning Install them with:  dkp-pacman -S switch-mesa switch-libdrm_nouveau switch-libpng switch-zlib)
 $(warning (on Windows, run pacman -S ... in the devkitPro MSYS2 shell))
 $(error missing portlibs, see above)
 endif
@@ -64,7 +64,7 @@ ASFLAGS  := -g $(ARCH)
 LDFLAGS   = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
 # mesa is partly C++, so the link goes through the C++ driver (LD below).
-LIBS     := -lSDL2 -lGLESv2 -lEGL -lglapi -ldrm_nouveau -lpng -lz -lnx -lm
+LIBS     := -lGLESv2 -lEGL -lglapi -ldrm_nouveau -lpng -lz -lnx -lm
 
 LIBDIRS  := $(PORTLIBS) $(LIBNX)
 
@@ -96,7 +96,6 @@ all: $(BUILD)
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
-
 clean:
 	@echo clean ...
 	@rm -fr $(BUILD) $(TARGET).nro $(TARGET).nacp $(TARGET).elf
@@ -115,6 +114,15 @@ endif
 all: $(OUTPUT).nro
 
 $(OUTPUT).nro: $(OUTPUT).elf $(OUTPUT).nacp $(APP_ICON)
+# main.o carries the __DATE__/__TIME__ stamp the log prints. Without this it
+# is only recompiled when main.c itself changes, so a build that fixed some
+# other file reports the OLD timestamp -- which has already cost a round of
+# "is this the new binary or not?". Forcing one small file per build is cheap
+# and makes the stamp mean what it says.
+main.o: .FORCE
+.FORCE:
+.PHONY: .FORCE
+
 $(OUTPUT).elf: $(OFILES)
 
 -include $(DEPENDS)

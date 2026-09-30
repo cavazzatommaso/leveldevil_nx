@@ -1,7 +1,8 @@
 MIT License
 
 Copyright (c) 2026 Heart Star Nintendo Switch port contributors
-Copyright (c) 2026 cavazzatommaso (Level Devil fork)
+Copyright (c) 2026 Total Party Kill Nintendo Switch port contributors
+Copyright (c) 2026 cavazzatommaso (Level Devil port)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -25,7 +26,7 @@ SOFTWARE.
 
 This repository contains only the port: a loader and compatibility layer.
 
-Heart Star itself -- its code, artwork, audio and data -- is the
+Total Party Kill itself -- its code, artwork, audio and data -- is the
 property of Adventure Islands and is NOT included or redistributed here. The
 port loads those files from a copy of the game that the user provides.
 

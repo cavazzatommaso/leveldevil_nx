@@ -1,7 +1,6 @@
 /* jni_env.h -- a small Java runtime for the JNI calls the game makes.
  *
- * There is no JVM. liblime.so's JNI bridge (used by the game's Haxe code for
- * Lime's JNI.callStatic/callMember) and the SDL Android glue receive a JNIEnv
+ * There is no JVM. the Defold engine and its extensions receive a JNIEnv
  * whose function table is implemented in jni_env.c on top of a tiny object
  * model: strings, arrays, boxed primitives, plain objects with fields, and
  * classes. Behaviour lives in jni_classes.c as tables of methods and fields.
@@ -18,17 +17,10 @@
  * before being freed, so a double DeleteLocalRef is logged instead of
  * crashing.
  *
- * THREADS
- * Java-to-Haxe callbacks (Lime.onCallback, HaxeObject.call) run on a
- * dedicated "UI thread", exactly as on Android. Lime's callObjectFunction
- * force-registers the calling thread's stack top with hxcpp's GC, so calling
- * it from the game thread in mid-frame would hide the game thread's outer
- * stack frames from the collector.
- *
  * MIT licensed, see LICENSE.
  */
-#ifndef HS_JNI_ENV_H
-#define HS_JNI_ENV_H
+#ifndef PB_JNI_ENV_H
+#define PB_JNI_ENV_H
 
 #include <stdint.h>
 #include "so_util.h"
@@ -139,9 +131,12 @@ typedef struct JClass {
 
 /* ---------------------------------------------------------- lifecycle -- */
 void      jni_init(void);
-void      jni_bind_lime(so_module *lime);   /* after liblime is mapped */
 JNIEnvPtr jni_get_env(void);
 JavaVMPtr jni_get_vm(void);
+/* jni_classes.c: bind the engine's SDK callback natives; deliver queued
+ * SDK answers (main loop). */
+void      jni_bind_engine(so_module *m);
+void      jni_pump(void);
 
 /* ------------------------------------------------------------ objects -- */
 JClass     *jni_find_class(const char *slash_name);
@@ -159,12 +154,5 @@ jobject     jni_permanent_string(const char *utf8);
 JField *jni_field(JClass *cls, const char *name, const char *sig, int is_static);
 void    jni_set_field(jobject o, JField *f, jvalue v);
 jvalue  jni_get_field(jobject o, JField *f);
-
-/* ------------------------------------------------ Java -> Haxe callbacks -- */
-/* Run Lime.onCallback(handle) on the UI thread (GameActivity.postUICallback). */
-void jni_post_ui_callback(jlong handle);
-/* HaxeObject.call(name, args) on the UI thread. Up to 4 args; each one is a
- * new reference that the queue takes over. haxeobj gets its own reference. */
-void jni_post_haxe_call(jobject haxeobj, const char *function, int nargs, jobject *args);
 
 #endif

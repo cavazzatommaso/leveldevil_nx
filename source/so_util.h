@@ -3,7 +3,8 @@
  * Lineage: the so_util.c of the vitaGL/fgsfds Android wrapper ports (MIT,
  * Andy Nguyen and fgsfds), by way of the Switch ports it was carried into.
  * This version reads everything from PT_DYNAMIC rather than section headers,
- * resolves exports through DT_HASH, and keeps a module list for dlopen,
+ * resolves exports through DT_HASH or DT_GNU_HASH (Poor Bunny's
+ * libApplicationMain.so ships only the latter), and keeps a module list for dlopen,
  * dl_iterate_phdr and crash symbolization.
  *
  * Lifecycle of a module:
@@ -22,8 +23,8 @@
  *
  * MIT licensed, see LICENSE.
  */
-#ifndef HS_SO_UTIL_H
-#define HS_SO_UTIL_H
+#ifndef PB_SO_UTIL_H
+#define PB_SO_UTIL_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -56,7 +57,7 @@ typedef struct so_module {
     int       phnum;
 
     /* Dynamic section, as offsets from the module base. */
-    uint64_t  dt_symtab, dt_strtab, dt_hash;
+    uint64_t  dt_symtab, dt_strtab, dt_hash, dt_gnu_hash;
     uint64_t  dt_rela, dt_relasz, dt_jmprel, dt_pltrelsz;
     uint64_t  dt_init_array, dt_init_arraysz;
     uint32_t  nsyms;

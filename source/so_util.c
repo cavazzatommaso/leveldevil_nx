@@ -14,6 +14,7 @@
 
 #define DT_NULL_            0
 #define DT_HASH_            4
+#define DT_GNU_HASH_        0x6ffffef5
 #define DT_STRTAB_          5
 #define DT_SYMTAB_          6
 #define DT_RELA_            7
@@ -48,7 +49,102 @@ static inline void *mod_ptr(const so_module *m, uint64_t off)
     return (void *)(base_of(m) + (uintptr_t)off);
 }
 
+static so_sym *symtab(const so_module *m) { return (so_sym *)mod_ptr(m, m->dt_symtab); }
+static const char *strtab(const so_module *m) { return (const char *)mod_ptr(m, m->dt_strtab); }
+
 so_module *so_module_list(void) { return g_modules; }
+
+
+/* ------------------------------------------------------------ GNU hash ---
+ * Layout at DT_GNU_HASH:
+ *   uint32 nbuckets, symoffset, bloom_size, bloom_shift
+ *   uint64 bloom[bloom_size]
+ *   uint32 buckets[nbuckets]
+ *   uint32 chain[]            indexed by (symbol index - symoffset)
+ * The chain word's low bit ends a bucket's run. Symbols below symoffset are
+ * not hashed at all (they are the undefined and local ones).
+ */
+typedef struct {
+    const uint32_t *buckets, *chain;
+    const uint64_t *bloom;
+    uint32_t nbuckets, symoffset, bloom_size, bloom_shift;
+} gnu_hash_t;
+
+static int gnu_hash_read(const so_module *m, gnu_hash_t *g)
+{
+    const uint32_t *h;
+    if (!m->dt_gnu_hash)
+        return 0;
+    h = (const uint32_t *)mod_ptr(m, m->dt_gnu_hash);
+    g->nbuckets = h[0];
+    g->symoffset = h[1];
+    g->bloom_size = h[2];
+    g->bloom_shift = h[3];
+    if (!g->nbuckets || !g->bloom_size)
+        return 0;
+    g->bloom = (const uint64_t *)(const void *)&h[4];
+    g->buckets = (const uint32_t *)(const void *)&g->bloom[g->bloom_size];
+    g->chain = &g->buckets[g->nbuckets];
+    return 1;
+}
+
+/* One past the highest symbol index any chain reaches. */
+static uint32_t gnu_hash_nsyms(const so_module *m)
+{
+    gnu_hash_t g;
+    uint32_t i, last = 0;
+
+    if (!gnu_hash_read(m, &g))
+        return 0;
+    for (i = 0; i < g.nbuckets; i++)
+        if (g.buckets[i] > last)
+            last = g.buckets[i];
+    if (last < g.symoffset)
+        return g.symoffset;          /* nothing hashed */
+    while (!(g.chain[last - g.symoffset] & 1))
+        last++;
+    return last + 1;
+}
+
+static uint32_t gnu_hash_of(const char *name)
+{
+    uint32_t h = 5381;
+    while (*name)
+        h = h * 33 + (unsigned char)*name++;
+    return h;
+}
+
+/* Symbol index for `name`, or 0. */
+static uint32_t gnu_hash_lookup(const so_module *m, const char *name,
+                                const so_sym *syms, const char *strs)
+{
+    gnu_hash_t g;
+    uint32_t h, i, word;
+    uint64_t bits;
+
+    if (!gnu_hash_read(m, &g))
+        return 0;
+    h = gnu_hash_of(name);
+
+    /* Bloom filter: a miss here is conclusive. */
+    bits = g.bloom[(h / 64) % g.bloom_size];
+    if (!((bits >> (h % 64)) & (bits >> ((h >> g.bloom_shift) % 64)) & 1))
+        return 0;
+
+    i = g.buckets[h % g.nbuckets];
+    if (i < g.symoffset)
+        return 0;
+    for (;;) {
+        word = g.chain[i - g.symoffset];
+        if ((word | 1) == (h | 1) && !strcmp(strs + syms[i].st_name, name))
+            return i;
+        if (word & 1)
+            return 0;
+        i++;
+        if (i >= m->nsyms)
+            return 0;
+    }
+}
 
 int so_load(so_module *mod, const char *path, const char *shortname)
 {
@@ -143,6 +239,7 @@ int so_load(so_module *mod, const char *path, const char *shortname)
         for (dyn = mod_ptr(mod, p->p_vaddr); dyn[0] != DT_NULL_; dyn += 2) {
             switch (dyn[0]) {
             case DT_HASH_:         mod->dt_hash = dyn[1]; break;
+            case DT_GNU_HASH_:     mod->dt_gnu_hash = dyn[1]; break;
             case DT_STRTAB_:       mod->dt_strtab = dyn[1]; break;
             case DT_SYMTAB_:       mod->dt_symtab = dyn[1]; break;
             case DT_RELA_:         mod->dt_rela = dyn[1]; break;
@@ -155,13 +252,23 @@ int so_load(so_module *mod, const char *path, const char *shortname)
             }
         }
     }
-    if (!mod->dt_symtab || !mod->dt_strtab || !mod->dt_hash) {
-        LOGE("so_load: %s has no DT_SYMTAB/DT_STRTAB/DT_HASH", shortname);
+    if (!mod->dt_symtab || !mod->dt_strtab || (!mod->dt_hash && !mod->dt_gnu_hash)) {
+        LOGE("so_load: %s has no DT_SYMTAB/DT_STRTAB and no hash table", shortname);
         free(mod->load_base);
         mod->load_base = NULL;
         return -2;
     }
-    mod->nsyms = ((const uint32_t *)mod_ptr(mod, mod->dt_hash))[1];
+    /* DT_HASH carries the symbol count in its second word. A module built with
+     * only DT_GNU_HASH (libApplicationMain.so is) does not state it anywhere,
+     * so it has to be recovered from the hash chains. */
+    mod->nsyms = mod->dt_hash ? ((const uint32_t *)mod_ptr(mod, mod->dt_hash))[1]
+                              : gnu_hash_nsyms(mod);
+    if (!mod->nsyms) {
+        LOGE("so_load: %s has an unreadable symbol table", shortname);
+        free(mod->load_base);
+        mod->load_base = NULL;
+        return -2;
+    }
 
     virtmemLock();
     mod->load_virtbase = virtmemFindCodeMemory(mod->load_size, 0x1000);
@@ -192,9 +299,6 @@ bad:
     free(img);
     return -2;
 }
-
-static so_sym *symtab(const so_module *m) { return (so_sym *)mod_ptr(m, m->dt_symtab); }
-static const char *strtab(const so_module *m) { return (const char *)mod_ptr(m, m->dt_strtab); }
 
 static int reloc_range(so_module *m, uint64_t off, uint64_t size, int resolve,
                        so_resolver_fn resolver, int *missing, char *missing_buf, size_t missing_len)
@@ -389,29 +493,42 @@ static unsigned long elf_hash(const char *name)
     return h;
 }
 
+static int sym_is_export(const so_sym *s)
+{
+    return s->st_shndx != 0 && (s->st_info >> 4) != STB_LOCAL_;
+}
+
 uintptr_t so_symbol(so_module *mod, const char *name)
 {
-    const uint32_t *hash;
-    uint32_t nbucket, i;
     const so_sym *syms;
     const char *strs;
 
-    if (!mod || !name || !mod->dt_hash)
-        return 0;
-    hash = (const uint32_t *)mod_ptr(mod, mod->dt_hash);
-    nbucket = hash[0];
-    if (!nbucket)
+    if (!mod || !name)
         return 0;
     syms = symtab(mod);
     strs = strtab(mod);
-    for (i = hash[2 + elf_hash(name) % nbucket]; i != 0; i = hash[2 + nbucket + i]) {
-        const so_sym *s = &syms[i];
-        if (i >= mod->nsyms)
-            break;
-        if (s->st_shndx == 0 || (s->st_info >> 4) == STB_LOCAL_)
-            continue;
-        if (strcmp(strs + s->st_name, name) == 0)
-            return (uintptr_t)mod->load_virtbase + (uintptr_t)s->st_value;
+
+    if (mod->dt_hash) {
+        const uint32_t *hash = (const uint32_t *)mod_ptr(mod, mod->dt_hash);
+        uint32_t nbucket = hash[0], i;
+        if (!nbucket)
+            return 0;
+        for (i = hash[2 + elf_hash(name) % nbucket]; i != 0; i = hash[2 + nbucket + i]) {
+            const so_sym *s = &syms[i];
+            if (i >= mod->nsyms)
+                break;
+            if (!sym_is_export(s))
+                continue;
+            if (strcmp(strs + s->st_name, name) == 0)
+                return (uintptr_t)mod->load_virtbase + (uintptr_t)s->st_value;
+        }
+        return 0;
+    }
+
+    {
+        uint32_t i = gnu_hash_lookup(mod, name, syms, strs);
+        if (i && i < mod->nsyms && sym_is_export(&syms[i]))
+            return (uintptr_t)mod->load_virtbase + (uintptr_t)syms[i].st_value;
     }
     return 0;
 }

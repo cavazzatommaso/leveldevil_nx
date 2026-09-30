@@ -7,8 +7,8 @@
  *
  * MIT licensed, see LICENSE.
  */
-#ifndef HS_IMPORTS_H
-#define HS_IMPORTS_H
+#ifndef PB_IMPORTS_H
+#define PB_IMPORTS_H
 
 #include <stdint.h>
 #include "so_util.h"

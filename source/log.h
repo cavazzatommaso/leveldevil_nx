@@ -1,4 +1,4 @@
-/* log.h -- leveldevil.log next to the game files.
+/* log.h -- poorbunny.log next to the game files.
  *
  * Everything the port knows about a run ends up here: loader progress, every
  * SDL/JNI call that fell through to a default, Haxe trace() output (which
@@ -10,15 +10,15 @@
  *
  * MIT licensed, see LICENSE.
  */
-#ifndef HS_LOG_H
-#define HS_LOG_H
+#ifndef PB_LOG_H
+#define PB_LOG_H
 
 #include <stdarg.h>
 #include <stddef.h>
 
-#define HS_LOG_OFF   0
-#define HS_LOG_INFO  1
-#define HS_LOG_DEBUG 2
+#define PB_LOG_OFF   0
+#define PB_LOG_INFO  1
+#define PB_LOG_DEBUG 2
 
 void log_init(const char *path);
 void log_set_level(int level);
@@ -31,9 +31,18 @@ void log_flush(void);
 /* Unbuffered, lock-free write for the crash handler. */
 void log_emergency(const char *s);
 
+/* Record the current start-up milestone. Written to the log immediately,
+ * whatever the log level, and repeated by the crash handler. On a port that
+ * has never run, knowing the last stage reached is worth more than any
+ * register dump. */
+void log_stage(const char *name);
+/* Called by the crash handler: silences all ordinary logging. */
+void log_begin_crash(void);
+const char *log_last_stage(void);
+
 #define LOGI(...) log_printf(__VA_ARGS__)
 #define LOGE(...) log_printf("!! " __VA_ARGS__)
-#define LOGD(...) do { if (log_get_level() >= HS_LOG_DEBUG) log_printf(__VA_ARGS__); } while (0)
+#define LOGD(...) do { if (log_get_level() >= PB_LOG_DEBUG) log_printf(__VA_ARGS__); } while (0)
 
 /* Log a message the first time a call site is reached, then stay quiet. */
 #define LOG_ONCE(...) do { static int once_; if (!once_) { once_ = 1; log_printf(__VA_ARGS__); } } while (0)

@@ -128,32 +128,9 @@ char *bx_getenv(const char *name)
 void bx_libc_init(void)
 {
     g_tick0 = armGetSystemTick();
-    bx_setenv("SDL_DYNAMIC_API", HS_SDL_SENTINEL, 1);
-    /* liblime's OpenAL Soft has opensl, sdl2, null and wave backends; sdl2
-     * sends the mix through switch-sdl2's audren driver. */
-    bx_setenv("ALSOFT_DRIVERS", "sdl2", 1);
     bx_setenv("HOME", paths_save_nodev(), 1);
     bx_setenv("TMPDIR", paths_save_nodev(), 1);
     bx_setenv("LANG", "en_US.UTF-8", 1);
-    if (log_get_level() >= HS_LOG_DEBUG)
-        bx_setenv("ALSOFT_LOGLEVEL", "3", 1);
-
-    /* hxcpp's collector reads these (getenv + atoi, in bytes). Its defaults --
-     * 8 MB working memory, 4 MB minimum free -- are sized for phones and make
-     * it collect often; on a console with gigabytes free, collecting less
-     * often removes a recurring source of dropped frames. */
-    if (g_cfg.gc_working_mb > 0) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%d", g_cfg.gc_working_mb * 1024 * 1024);
-        bx_setenv("HXCPP_MINIMUM_WORKING_MEMORY", buf, 1);
-    }
-    if (g_cfg.gc_free_mb > 0) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%d", g_cfg.gc_free_mb * 1024 * 1024);
-        bx_setenv("HXCPP_MINIMUM_FREE_SPACE", buf, 1);
-    }
-    LOGI("gc: working memory %d MB, minimum free %d MB%s", g_cfg.gc_working_mb,
-         g_cfg.gc_free_mb, g_cfg.gc_working_mb ? "" : " (the game's own settings)");
 }
 
 /* ----------------------------------------------------------------- time -- */
@@ -386,8 +363,8 @@ void bx_exit(int code)
 {
     log_caller("exit()", (uintptr_t)__builtin_return_address(0));
     LOGI("exit(%d) requested by the game", code);
-    hs_request_exit(code);
-    hs_park_forever();
+    pb_request_exit(code);
+    pb_park_forever();
 }
 
 void bx_stack_chk_fail(void)
@@ -414,7 +391,7 @@ static const char LOG_PRIO[] = "??VDIWEFS";
 
 int bx_android_log_write(int prio, const char *tag, const char *text)
 {
-    if (prio <= 2 && log_get_level() < HS_LOG_DEBUG)
+    if (prio <= 2 && log_get_level() < PB_LOG_DEBUG)
         return 0;
     log_printf("%c/%s: %s", LOG_PRIO[(unsigned)prio < 9 ? prio : 0],
                tag ? tag : "", text ? text : "");
@@ -425,7 +402,7 @@ int bx_android_log_print(int prio, const char *tag, const char *fmt, ...)
 {
     char buf[1024];
     va_list ap;
-    if (prio <= 2 && log_get_level() < HS_LOG_DEBUG)
+    if (prio <= 2 && log_get_level() < PB_LOG_DEBUG)
         return 0;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt ? fmt : "", ap);

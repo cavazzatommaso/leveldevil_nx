@@ -5,14 +5,12 @@
 #include "dl_bridge.h"
 #include "imports.h"
 #include "log.h"
-#include "sdl_bridge.h"
 #include "so_util.h"
 
 /* Opaque handles for the non-module cases. Never dereferenced. */
-static char g_handle_global, g_handle_system, g_handle_sdl;
+static char g_handle_global, g_handle_system;
 #define H_GLOBAL ((void *)&g_handle_global)
 #define H_SYSTEM ((void *)&g_handle_system)
-#define H_SDL    ((void *)&g_handle_sdl)
 
 static __thread const char *t_error;
 static __thread char t_errbuf[256];
@@ -62,10 +60,6 @@ void *bx_dlopen(const char *name, int flags)
 
     if (!name)
         return H_GLOBAL;
-    if (strstr(name, HS_SDL_SENTINEL)) {
-        LOGI("dlopen(%s): SDL dynamic API -> switch-sdl2", name);
-        return H_SDL;
-    }
     stem(name, want, sizeof(want));
     for (m = so_module_list(); m; m = m->next) {
         stem(m->name, have, sizeof(have));
@@ -94,10 +88,7 @@ void *bx_dlsym(void *handle, const char *name)
         t_error = "dlsym: NULL symbol name";
         return NULL;
     }
-    if (handle == H_SDL) {
-        if (!strcmp(name, "SDL_DYNAPI_entry"))
-            return (void *)&hs_SDL_DYNAPI_entry;
-    } else if (handle == H_SYSTEM) {
+    if (handle == H_SYSTEM) {
         addr = imports_lookup(name);
     } else if (handle == H_GLOBAL || handle == NULL || handle == (void *)-1L) {
         /* RTLD_DEFAULT (NULL) and RTLD_NEXT (-1): modules, then the table */

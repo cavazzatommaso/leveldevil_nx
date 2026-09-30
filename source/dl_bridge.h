@@ -6,23 +6,22 @@
  *    dlsym()s every lime_*__prime entry point plus hx_set_loader. Without a
  *    working dlsym the game cannot call a single Lime native function.
  *
- *  - SDL's Dynamic API (in liblime.so) reads $SDL_DYNAMIC_API, dlopen()s that
- *    name and calls its SDL_DYNAPI_entry. The environment is seeded with
- *    HS_SDL_SENTINEL so that lookup lands in sdl_bridge.c, which fills
- *    liblime's jump table with switch-sdl2.
+ *  - SDL's Android video driver dlopen()s "libEGL.so" and "libGLESv2.so" and
+ *    dlsym()s each entry point it needs. That is how EGL reaches switch-mesa
+ *    here, and it is the reason imports.c carries egl* rows for functions no
+ *    ELF header actually imports: without them SDL_EGL_LoadLibrary finds
+ *    nothing and the game never gets a GL context.
  *
- *  - SDL and OpenAL probe libGLESv2/libEGL/libOpenSLES; those resolve
- *    through the import table so the probes see the same functions the
- *    modules were linked against.
+ *    This build has SDL's Dynamic API compiled out, so there is no
+ *    SDL_DYNAPI_entry to answer and no jump table to fill -- the Android SDL
+ *    inside liblime is the SDL that runs. See android_sdl.c.
  *
  * MIT licensed, see LICENSE.
  */
-#ifndef HS_DL_BRIDGE_H
-#define HS_DL_BRIDGE_H
+#ifndef PB_DL_BRIDGE_H
+#define PB_DL_BRIDGE_H
 
 #include <stddef.h>
-
-#define HS_SDL_SENTINEL "libSDL2-switch-native.so"
 
 void *bx_dlopen(const char *name, int flags);
 void *bx_dlsym(void *handle, const char *name);

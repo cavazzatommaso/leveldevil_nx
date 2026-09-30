@@ -4,11 +4,13 @@
 #include <string.h>
 #include <switch.h>
 
+#include "app.h"
 #include "log.h"
 
 static FILE  *g_fp;
+static volatile int g_crashing;   /* set by the crash handler */
 static char  *g_buf;
-static int    g_level = HS_LOG_INFO;
+static int    g_level = PB_LOG_INFO;
 static RMutex g_lock;
 static u64    g_tick0;
 static int    g_dirty;
@@ -27,7 +29,7 @@ static void open_file(void)
     g_buf = malloc(1 << 16);
     if (g_buf)
         setvbuf(g_fp, g_buf, _IOFBF, 1 << 16);
-    fputs("Level Devil -- Nintendo Switch wrapper port\n", g_fp);
+    fputs("Level Devil (Defold) -- Nintendo Switch wrapper port\n", g_fp);
 }
 
 void log_init(const char *path)
@@ -46,7 +48,7 @@ void log_vprintf(const char *fmt, va_list ap)
     int n, pre;
     u64 ms;
 
-    if (g_level <= HS_LOG_OFF)
+    if (g_crashing || g_level <= PB_LOG_OFF)
         return;
 
     ms = armTicksToNs(armGetSystemTick() - g_tick0) / 1000000ULL;
@@ -90,7 +92,7 @@ void log_flush(void)
     /* Writing to the SD card can block for milliseconds, so this is only
      * worth doing when there is something buffered -- and the main thread,
      * not the game thread, is the one that calls it on a timer. */
-    if (!g_fp || !g_dirty)
+    if (g_crashing || !g_fp || !g_dirty)
         return;
     rmutexLock(&g_lock);
     if (g_dirty) {
@@ -99,6 +101,42 @@ void log_flush(void)
     }
     rmutexUnlock(&g_lock);
 }
+
+/* One byte longer than anything written into it, and that byte is never
+ * touched, so a reader that races a write still sees a terminated string.
+ * log_last_stage() is deliberately lock-free: the crash handler calls it and
+ * must never block on a lock the faulting thread might hold. */
+static char g_stage[80] = "(nothing yet)";
+
+/* Once the crash handler owns the file, everyone else keeps away from it. */
+void log_begin_crash(void) { g_crashing = 1; }
+
+void log_stage(const char *name)
+{
+    if (!name || g_crashing)
+        return;
+    /* Under the same lock as every other writer. An earlier version wrote to
+     * g_fp without it, and the main thread's stage line duly interleaved into
+     * a crash report from another thread -- newlib's FILE has no internal
+     * locking here. g_crashing is checked before the lock so a faulting
+     * thread holding it cannot deadlock the others. */
+    rmutexLock(&g_lock);
+    /* The breadcrumb is always kept, whatever the log level: it costs one
+     * small copy and it is what lets a crash report say how far start-up
+     * got even on a release build with logging off. Only the FILE write is
+     * gated. */
+    snprintf(g_stage, sizeof(g_stage) - 1, "%s", name);
+    if (g_level > PB_LOG_OFF) {
+        open_file();
+        if (g_fp) {
+            fprintf(g_fp, "[%8.3f] stage: %s\n", pb_uptime(), g_stage);
+            fflush(g_fp);
+        }
+    }
+    rmutexUnlock(&g_lock);
+}
+
+const char *log_last_stage(void) { return g_stage; }
 
 void log_emergency(const char *s)
 {

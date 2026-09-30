@@ -32,6 +32,7 @@
 #include <switch.h>
 
 #include "bionic.h"
+#include "tls.h"
 #include "log.h"
 
 #define HANDLE_TAG   0x80000000u
@@ -484,8 +485,13 @@ static void *thread_trampoline(void *p)
     Trampoline t = *(Trampoline *)p;
     void *ret;
     free(p);
+    /* Before a single instruction of module code: the thread function is the
+     * game's, and anything it calls that was built with -fstack-protector
+     * reads TPIDR_EL0 + 0x28 on entry. See tls.c. */
+    pb_tls_attach("a thread the game started");
     ret = t.fn(t.arg);
     run_key_destructors();
+    pb_tls_detach();
     return ret;
 }
 
@@ -738,6 +744,10 @@ static struct { Mutex lock; CondVar cv; } g_futex[FUTEX_BUCKETS];
 long bx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6)
 {
     (void)a5; (void)a6;
+    if (n == 278) {                                 /* getrandom(buf, len, flags) */
+        csrngGetRandomBytes((void *)a1, (size_t)a2);
+        return a2;
+    }
     if (n == LX_SYS_FUTEX) {
         int *addr = (int *)a1;
         int op = (int)a2 & LX_FUTEX_CMD_MASK;
@@ -780,7 +790,123 @@ long bx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6)
         errno = LX_ENOSYS;
         return -1;
     }
+    /* __NR_gettid on aarch64. OpenAL Soft asks for it once per thread it
+     * starts, and logging that as an error filled the log with noise on a
+     * perfectly healthy run. The Switch has no tids, so the thread handle is
+     * the stable per-thread number to hand back. */
+    if (n == 178)
+        return (long)threadGetCurHandle();
+
     LOGE("syscall(%ld) not implemented", n);
     errno = LX_ENOSYS;
     return -1;
+}
+
+/* ------------------------------------------------------------ rwlocks --- */
+/* New in this build: liblime imports pthread_rwlock_rdlock/wrlock/unlock.
+ * A plain mutex is a correct reader-writer lock -- it only gives up reader
+ * concurrency, and every use here is short. The object follows the same
+ * lazy-handle scheme as the mutexes: bionic's rwlock is a 56-byte blob whose
+ * static initialiser is all zeroes, so a zero first word means "not made
+ * yet". */
+
+static NxMutex *rwlock_get(bionic_rwlock_t *rw)
+{
+    uint32_t w;
+    NxMutex *nm;
+
+    if (!rw)
+        return NULL;
+    mutexLock(&g_table_lock);
+    w = (uint32_t)rw->v[0];
+    if (!(w & HANDLE_TAG)) {
+        nm = mutex_new(0);
+        if (!nm) {
+            mutexUnlock(&g_table_lock);
+            return NULL;
+        }
+        w = handle_add_locked(nm);
+        if (!w) {
+            free(nm);
+            mutexUnlock(&g_table_lock);
+            return NULL;
+        }
+        rw->v[0] = (int32_t)w;
+    }
+    mutexUnlock(&g_table_lock);
+    return handle_get(w);
+}
+
+int bx_pthread_rwlock_init(bionic_rwlock_t *rw, const void *attr)
+{
+    (void)attr;
+    if (!rw)
+        return LX_EINVAL;
+    memset(rw, 0, sizeof(*rw));
+    return rwlock_get(rw) ? 0 : LX_ENOMEM;
+}
+
+int bx_pthread_rwlock_destroy(bionic_rwlock_t *rw)
+{
+    uint32_t w;
+    if (!rw)
+        return LX_EINVAL;
+    mutexLock(&g_table_lock);
+    w = (uint32_t)rw->v[0];
+    if (w & HANDLE_TAG) {
+        NxMutex *nm = handle_get(w);
+        handle_remove_locked(w);
+        free(nm);
+    }
+    rw->v[0] = 0;
+    mutexUnlock(&g_table_lock);
+    return 0;
+}
+
+int bx_pthread_rwlock_rdlock(bionic_rwlock_t *rw)
+{
+    NxMutex *nm = rwlock_get(rw);
+    if (!nm)
+        return LX_EINVAL;
+    mutexLock(&nm->m);
+    return 0;
+}
+
+int bx_pthread_rwlock_wrlock(bionic_rwlock_t *rw)
+{
+    return bx_pthread_rwlock_rdlock(rw);
+}
+
+int bx_pthread_rwlock_unlock(bionic_rwlock_t *rw)
+{
+    NxMutex *nm = rwlock_get(rw);
+    if (!nm)
+        return LX_EINVAL;
+    mutexUnlock(&nm->m);
+    return 0;
+}
+
+/* sem_timedwait: newlib has no timed semaphore wait and the bionic sem_t is
+ * this port's own struct, so it is a bounded poll. The callers here use it as
+ * a shutdown-safe wait, not a precise timer. */
+int bx_sem_timedwait(bionic_sem_t *s, const struct bionic_timespec *abstime)
+{
+    s64 remaining_ns;
+
+    if (!s)
+        return LX_EINVAL;
+    if (!abstime)
+        return bx_sem_wait(s);
+
+    remaining_ns = (s64)abstime->tv_sec * 1000000000LL + abstime->tv_nsec - realtime_ns();
+    for (;;) {
+        if (bx_sem_trywait(s) == 0)
+            return 0;
+        if (remaining_ns <= 0) {
+            errno = LX_ETIMEDOUT;
+            return -1;
+        }
+        svcSleepThread(remaining_ns > 2000000LL ? 2000000LL : remaining_ns);
+        remaining_ns -= 2000000LL;
+    }
 }

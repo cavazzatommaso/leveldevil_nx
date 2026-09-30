@@ -14,8 +14,8 @@
  *
  * MIT licensed, see LICENSE.
  */
-#ifndef HS_BIONIC_H
-#define HS_BIONIC_H
+#ifndef PB_BIONIC_H
+#define PB_BIONIC_H
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -63,6 +63,8 @@ void bx_fix_errno(void);
 /* ----------------------------------------------------------------- stdio -- */
 #define BIONIC_FILE_SIZE 152
 extern char bx_sF[3 * BIONIC_FILE_SIZE];     /* exported to the modules as __sF */
+/* This NDK also exports stdin/stdout/stderr as FILE* variables. */
+extern void *bx_stdin_var, *bx_stdout_var, *bx_stderr_var;
 
 /* --------------------------------------------------------------- structs -- */
 struct bionic_timespec { long tv_sec; long tv_nsec; };
@@ -112,6 +114,7 @@ struct bionic_sigaction { void *handler; unsigned long sa_mask; int sa_flags; vo
 typedef struct { int32_t v[10]; } bionic_mutex_t;
 typedef struct { int32_t v[12]; } bionic_cond_t;
 typedef struct { uint32_t v[4]; } bionic_sem_t;
+typedef struct { int32_t  v[14]; } bionic_rwlock_t;   /* bionic LP64: 56 bytes */
 typedef long bionic_mutexattr_t;
 typedef long bionic_condattr_t;
 typedef int  bionic_once_t;
@@ -197,6 +200,7 @@ long   bx_readlink(const char *path, char *buf, size_t n);
 char  *bx_basename(const char *path);
 void  *bx_mmap(void *addr, size_t len, int prot, int flags, int fd, long off);
 int    bx_munmap(void *addr, size_t len);
+int    bx_mprotect(void *addr, size_t len, int prot);
 
 /* bionic_libc.c */
 void   bx_libc_init(void);
@@ -297,10 +301,122 @@ int    bx_sem_post(bionic_sem_t *s);
 int    bx_sem_wait(bionic_sem_t *s);
 int    bx_sem_trywait(bionic_sem_t *s);
 int    bx_sem_getvalue(bionic_sem_t *s, int *value);
+int    bx_sem_timedwait(bionic_sem_t *s, const struct bionic_timespec *abstime);
+int    bx_pthread_rwlock_init(bionic_rwlock_t *rw, const void *attr);
+int    bx_pthread_rwlock_destroy(bionic_rwlock_t *rw);
+int    bx_pthread_rwlock_rdlock(bionic_rwlock_t *rw);
+int    bx_pthread_rwlock_wrlock(bionic_rwlock_t *rw);
+int    bx_pthread_rwlock_unlock(bionic_rwlock_t *rw);
 long   bx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6);
 
 /* sjlj.S */
 int  bx_sigsetjmp(void *env, int savemask);
 void bx_siglongjmp(void *env, int val) __attribute__((noreturn));
+
+
+/* ---- bionic_extra.c: new in the Poor Bunny build ---- */
+#include <time.h>
+#include <wchar.h>
+#include <wctype.h>
+
+void  *bx_newlocale(int mask, const char *name, void *base);
+void   bx_freelocale(void *loc);
+void  *bx_uselocale(void *loc);
+void  *bx_duplocale(void *loc);
+struct lconv *bx_localeconv(void);
+size_t bx_ctype_get_mb_cur_max(void);
+
+int    bx_iswalpha_l(wint_t c, void *loc);
+int    bx_iswblank_l(wint_t c, void *loc);
+int    bx_iswcntrl_l(wint_t c, void *loc);
+int    bx_iswdigit_l(wint_t c, void *loc);
+int    bx_iswlower_l(wint_t c, void *loc);
+int    bx_iswprint_l(wint_t c, void *loc);
+int    bx_iswpunct_l(wint_t c, void *loc);
+int    bx_iswspace_l(wint_t c, void *loc);
+int    bx_iswupper_l(wint_t c, void *loc);
+int    bx_iswxdigit_l(wint_t c, void *loc);
+wint_t bx_towlower_l(wint_t c, void *loc);
+wint_t bx_towupper_l(wint_t c, void *loc);
+
+int    bx_strcoll_l(const char *a, const char *b, void *loc);
+size_t bx_strxfrm_l(char *dst, const char *src, size_t n, void *loc);
+int    bx_wcscoll_l(const wchar_t *a, const wchar_t *b, void *loc);
+size_t bx_wcsxfrm_l(wchar_t *dst, const wchar_t *src, size_t n, void *loc);
+size_t bx_strftime_l(char *s, size_t max, const char *fmt, const struct tm *tm, void *loc);
+long long          bx_strtoll_l(const char *s, char **end, int base, void *loc);
+unsigned long long bx_strtoull_l(const char *s, char **end, int base, void *loc);
+long double        bx_strtold_l(const char *s, char **end, void *loc);
+
+size_t bx_mbsnrtowcs(wchar_t *dst, const char **src, size_t nms, size_t len, mbstate_t *ps);
+size_t bx_wcsnrtombs(char *dst, const wchar_t **src, size_t nwc, size_t len, mbstate_t *ps);
+
+void   bx_sincos(double x, double *s, double *c);
+void   bx_sincosf(float x, float *s, float *c);
+
+void   bx_FD_SET_chk(int fd, void *set, size_t setsize);
+int    bx_FD_ISSET_chk(int fd, const void *set, size_t setsize);
+void   bx_assert2(const char *file, int line, const char *fn, const char *msg);
+void   bx_android_set_abort_message(const char *msg);
+int    bx_cxa_thread_atexit_impl(void (*fn)(void *), void *arg, void *dso);
+int    bx_register_atfork(void (*p)(void), void (*pa)(void), void (*c)(void), void *dso);
+unsigned long bx_getauxval(unsigned long type);
+int    bx_memfd_create(const char *name, unsigned int flags);
+int    bx_socketpair(int domain, int type, int protocol, int sv[2]);
+int    bx_kill(int pid, int sig);
+void   bx_openlog(const char *ident, int opt, int facility);
+void   bx_closelog(void);
+void   bx_syslog(int priority, const char *fmt, ...);
+
+int        bx_fseeko(FILE *bf, long long off, int whence);
+long long  bx_ftello(FILE *bf);
+void       bx_rewind(FILE *bf);
+int        bx_setvbuf(FILE *bf, char *buf, int mode, size_t size);
+void      *bx_tmpfile(void);
+
+/* Hidden behind __GNU_VISIBLE in newlib; provided by the port instead. */
+char      *bx_strcasestr(const char *haystack, const char *needle);
+int        bx_vasprintf(char **out, const char *fmt, va_list ap);
+/* Declared by newlib but implemented only for SPU/RTEMS. */
+int        bx_posix_memalign(void **memptr, size_t alignment, size_t size);
+
+/* ---- bionic_defold.c: new in the Defold build ---- */
+void  *bx_memcpy_chk(void *d, const void *s, size_t n, size_t dl);
+void  *bx_memmove_chk(void *d, const void *s, size_t n, size_t dl);
+void  *bx_memset_chk(void *d, int c, size_t n, size_t dl);
+size_t bx_strlen_chk(const char *s, size_t sl);
+char  *bx_strchr_chk(const char *s, int c, size_t sl);
+char  *bx_strrchr_chk(const char *s, int c, size_t sl);
+long   bx_read_chk(int fd, void *buf, size_t n, size_t bl);
+int    bx_open_2(const char *path, int flags);
+int    bx_vsnprintf_chk(char *buf, size_t n, int flags, size_t bl, const char *fmt, va_list ap);
+int    bx_vsprintf_chk(char *buf, int flags, size_t bl, const char *fmt, va_list ap);
+void   bx_FD_CLR_chk(int fd, void *set, size_t setsize);
+extern char bx_ctype_[1 + 256];
+extern const char *bx_ctype_ptr;
+int    bx_getc(FILE *f);
+int    bx_ungetc(int c, FILE *f);
+int    bx_fscanf(FILE *f, const char *fmt, ...);
+int    bx_vprintf(const char *fmt, va_list ap);
+void  *bx_popen(const char *cmd, const char *mode);
+int    bx_pclose(void *f);
+int    bx_mkstemp(char *tmpl);
+struct bionic_tm *bx_localtime(const long *t);
+long   bx_clock(void);
+int    bx_usleep(unsigned us);
+int    bx_setitimer(int which, const void *nv, void *ov);
+void  *bx_mremap(void *old, size_t oldsz, size_t newsz, int flags, ...);
+int    bx_pthread_attr_getstacksize(const bionic_attr_t *a, size_t *size);
+int    bx_pthread_getattr_np(bionic_pthread_t t, bionic_attr_t *a);
+int    bx_pthread_setname_np(bionic_pthread_t t, const char *name);
+int   *bx_get_h_errno(void);
+void  *bx_gethostbyname(const char *name);
+const char *bx_hstrerror(int e);
+int    bx_inet_aton(const char *cp, void *out);
+int    bx_getnameinfo(const void *sa, unsigned salen, char *host, unsigned hl, char *serv, unsigned sl, int flags);
+int    bx_dladdr(const void *addr, void *info);
+void   bx_glBindVertexArrayOES(unsigned array);
+void   bx_glGenVertexArraysOES(int n, unsigned *a);
+void   bx_defold_init(void);
 
 #endif

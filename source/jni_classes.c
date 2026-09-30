@@ -1,18 +1,12 @@
 /* jni_classes.c -- the Java classes the game touches, as method/field tables.
  *
- * Grouped as:
- *   java.lang      Object, Class, String, boxes, Throwable -- what liblime's
- *                  JNI bridge needs to convert values between Java and Haxe
- *   Lime           HaxeObject, Value, GameActivity, Extension
- *   Android        Activity/Context, Build, Locale, Environment, File
- *   SDKs           com.androidnative.Native (preferences, vibration) and four
- *                  services this port cannot offer: AdMob, Unity Ads, Google
- *                  Play Games, Google Play Billing. Those answer the way the
- *                  real SDKs do on a device with no network or no Play
- *                  services: "not available", "failed", no ads to show.
+ *   java.lang      Object, Class, String, boxes, Throwable, ClassLoader
+ *   Android        Activity/Context, NativeActivity, DefoldActivity, Build,
+ *                  Locale, Environment, File, ApplicationInfo, Display
  *
- * Signatures are taken from the strings in libApplicationMain.so and the
- * decompiled classes.dex, so each entry matches what the game asks for.
+ * Defold's extensions (ads, IAP, Firebase, Play Games...) load their Java
+ * classes through the activity's ClassLoader; none of them is modelled, so
+ * every call on them returns the type's default -- "not available".
  *
  * MIT licensed, see LICENSE.
  */
@@ -23,11 +17,9 @@
 
 #include "app.h"
 #include "config.h"
-#include "input.h"
 #include "jni_env.h"
 #include "log.h"
 #include "paths.h"
-#include "prefs.h"
 
 #define IMPL(fn) static jvalue fn(JNIEnvPtr env, jobject self, const jvalue *args, JMethod *m)
 #define GETTER(fn) static jvalue fn(JNIEnvPtr env, jobject self, JField *f)
@@ -36,6 +28,7 @@ static jvalue v_none(void)           { jvalue v; memset(&v, 0, sizeof(v)); retur
 static jvalue v_bool(int b)          { jvalue v = v_none(); v.z = (jboolean)(b != 0); return v; }
 static jvalue v_int(jint i)          { jvalue v = v_none(); v.i = i; return v; }
 static jvalue v_double(jdouble d)    { jvalue v = v_none(); v.d = d; return v; }
+static jvalue v_float(jfloat f)      { jvalue v = v_none(); v.f = f; return v; }
 static jvalue v_obj(jobject o)       { jvalue v = v_none(); v.l = o; return v; }
 static jvalue v_str(const char *s)   { return v_obj(jni_new_string(s)); }
 
@@ -54,30 +47,6 @@ static void dotted(const char *slash, char *out, size_t n)
             out[i] = '.';
 }
 
-/* Retain a callback object, releasing the previous one. */
-static void keep(jobject *slot, jobject o)
-{
-    jobject old = *slot;
-    *slot = jni_ref(o);
-    if (old)
-        jni_unref(old);
-}
-
-static void post0(jobject cb, const char *fn)
-{
-    if (cb)
-        jni_post_haxe_call(cb, fn, 0, NULL);
-}
-
-static void post_str(jobject cb, const char *fn, const char *s)
-{
-    jobject a;
-    if (!cb)
-        return;
-    a = jni_new_string(s);
-    jni_post_haxe_call(cb, fn, 1, &a);
-}
-
 /* ============================================================ java.lang === */
 
 static char box_code(const JClass *c)
@@ -85,7 +54,7 @@ static char box_code(const JClass *c)
     static const struct { const char *name; char code; } boxes[] = {
         { "java/lang/Boolean", 'Z' }, { "java/lang/Byte", 'B' },    { "java/lang/Character", 'C' },
         { "java/lang/Short", 'S' },   { "java/lang/Integer", 'I' }, { "java/lang/Long", 'J' },
-        { "java/lang/Float", 'F' },   { "java/lang/Double", 'D' },  { "org/haxe/lime/Value", 'D' },
+        { "java/lang/Float", 'F' },   { "java/lang/Double", 'D' },
     };
     size_t i;
     for (i = 0; c && i < sizeof(boxes) / sizeof(boxes[0]); i++)
@@ -310,7 +279,6 @@ static const JMethodDef box_methods[] = {
     { "longValue", "()J", box_longValue },
     { "floatValue", "()F", box_floatValue },
     { "doubleValue", "()D", box_doubleValue },
-    { "getDouble", "()D", box_doubleValue },          /* org.haxe.lime.Value */
     { NULL, NULL, NULL },
 };
 static const JClassDef class_Number    = { "java/lang/Number", NULL, NULL, box_methods, NULL };
@@ -322,7 +290,6 @@ static const JClassDef class_Integer   = { "java/lang/Integer", "java/lang/Numbe
 static const JClassDef class_Long      = { "java/lang/Long", "java/lang/Number", NULL, box_methods, NULL };
 static const JClassDef class_Float     = { "java/lang/Float", "java/lang/Number", NULL, box_methods, NULL };
 static const JClassDef class_Double    = { "java/lang/Double", "java/lang/Number", NULL, box_methods, NULL };
-static const JClassDef class_Value     = { "org/haxe/lime/Value", NULL, NULL, box_methods, NULL };
 
 IMPL(throwable_init)
 {
@@ -350,126 +317,15 @@ static const JClassDef class_Throwable = { "java/lang/Throwable", NULL, NULL, th
 static const JClassDef class_Exception = { "java/lang/Exception", "java/lang/Throwable", NULL, NULL, NULL };
 static const JClassDef class_RuntimeException = { "java/lang/RuntimeException", "java/lang/Exception", NULL, NULL, NULL };
 
-/* ================================================================= Lime === */
-
-IMPL(haxeobject_create)
-{
-    JClass *cls = jni_find_class("org/haxe/lime/HaxeObject");
-    jobject o = jni_new_object(cls);
-    (void)env; (void)self; (void)m;
-    if (o && args) {
-        jvalue v = v_none();
-        v.j = args[0].j;
-        jni_set_field(o, jni_field(cls, "__haxeHandle", "J", 0), v);
-    }
-    return v_obj(o);
-}
-
-static const JMethodDef haxeobject_methods[] = {
-    { "create", "(J)Lorg/haxe/lime/HaxeObject;", haxeobject_create },
-    { NULL, NULL, NULL },
-};
-static const JClassDef class_HaxeObject = { "org/haxe/lime/HaxeObject", NULL, NULL, haxeobject_methods, NULL };
-static const JClassDef class_Lime = { "org/haxe/lime/Lime", NULL, NULL, NULL, NULL };
-
-IMPL(ga_postUICallback)
-{
-    (void)env; (void)self; (void)m;
-    if (args)
-        jni_post_ui_callback(args[0].j);
-    return v_none();
-}
-
-IMPL(ga_getDisplayXDPI) { (void)env; (void)self; (void)args; (void)m; return v_double((jdouble)g_cfg.dpi); }
-IMPL(ga_zero)           { (void)env; (void)self; (void)args; (void)m; return v_int(0); }
-
-IMPL(ga_openURL)
-{
-    (void)env; (void)self; (void)m;
-    LOGI("GameActivity.openURL(%s) -- no browser on this port", arg_str(args, 0));
-    return v_none();
-}
-
-IMPL(ga_openFile)
-{
-    (void)env; (void)self; (void)m;
-    LOGI("GameActivity.openFile(%s) ignored", arg_str(args, 0));
-    return v_none();
-}
-
-IMPL(ga_vibrate)
-{
-    (void)env; (void)self;
-    if (args && m->nargs >= 2)
-        input_vibrate(args[1].i);           /* (period, duration) */
-    else if (args && m->nargs == 1)
-        input_vibrate(args[0].i);
-    return v_none();
-}
-
-IMPL(ga_getContext) { (void)env; (void)self; (void)args; (void)m; return v_obj(jni_activity()); }
-
-static const JMethodDef gameactivity_methods[] = {
-    { "postUICallback", "(J)V", ga_postUICallback },
-    { "getDisplayXDPI", "()D", ga_getDisplayXDPI },
-    { "getSafeInsetLeft", "()I", ga_zero },
-    { "getSafeInsetTop", "()I", ga_zero },
-    { "getSafeInsetRight", "()I", ga_zero },
-    { "getSafeInsetBottom", "()I", ga_zero },
-    { "openURL", NULL, ga_openURL },
-    { "openFile", NULL, ga_openFile },
-    { "vibrate", NULL, ga_vibrate },
-    { "getContext", NULL, ga_getContext },
-    { NULL, NULL, NULL },
-};
-static const JClassDef class_GameActivity = { "org/haxe/lime/GameActivity", "org/libsdl/app/SDLActivity", NULL, gameactivity_methods, NULL };
-static const JClassDef class_SDLActivity = { "org/libsdl/app/SDLActivity", "android/app/Activity", NULL, NULL, NULL };
-static const JClassDef class_MainActivity = { "com/adventureislands/leveldevil/MainActivity", "org/haxe/lime/GameActivity", NULL, NULL, NULL };
-
-static jobject g_view, g_handler, g_package;
-
-GETTER(ext_activity) { (void)env; (void)self; (void)f; return v_obj(jni_activity()); }
-
-GETTER(ext_view)
-{
-    (void)env; (void)self; (void)f;
-    if (!g_view) {
-        g_view = jni_new_object(jni_find_class("android/view/View"));
-        if (g_view)
-            g_view->permanent = 1;
-    }
-    return v_obj(g_view);
-}
-
-GETTER(ext_handler)
-{
-    (void)env; (void)self; (void)f;
-    if (!g_handler) {
-        g_handler = jni_new_object(jni_find_class("android/os/Handler"));
-        if (g_handler)
-            g_handler->permanent = 1;
-    }
-    return v_obj(g_handler);
-}
+static jobject g_package;
 
 static jobject package_name(void)
 {
     if (!g_package)
-        g_package = jni_permanent_string(HS_PACKAGE);
+        g_package = jni_permanent_string(PB_PACKAGE);
     return g_package;
 }
 
-GETTER(ext_package) { (void)env; (void)self; (void)f; return v_obj(package_name()); }
-
-static const JFieldDef extension_fields[] = {
-    { "mainActivity", NULL, ext_activity },
-    { "mainContext", NULL, ext_activity },
-    { "mainView", NULL, ext_view },
-    { "callbackHandler", NULL, ext_handler },
-    { "packageName", NULL, ext_package },
-    { NULL, NULL, NULL },
-};
-static const JClassDef class_Extension = { "org/haxe/extension/Extension", NULL, NULL, NULL, extension_fields };
 
 /* ============================================================== Android === */
 
@@ -522,7 +378,7 @@ IMPL(act_moveTaskToBack)
 {
     (void)env; (void)self; (void)args; (void)m;
     LOGI("Activity.moveTaskToBack: the game asked to quit");
-    hs_request_exit(0);
+    pb_request_exit(0);
     return v_bool(1);
 }
 
@@ -635,230 +491,260 @@ static const JMethodDef locale_methods[] = {
 };
 static const JClassDef class_Locale = { "java/util/Locale", NULL, NULL, locale_methods, NULL };
 
-/* ============================================================== the SDKs === */
+/* ================================================================ Defold === */
 
-/* ---- com.androidnative.Native: preferences, vibration, alerts ---- */
-
-static jobject g_native_cb;
-
-IMPL(native_initialize) { (void)env; (void)self; (void)m; if (args) keep(&g_native_cb, args[0].l); return v_none(); }
-IMPL(native_vibrate)    { (void)env; (void)self; (void)m; if (args) input_vibrate(args[0].i); return v_none(); }
-IMPL(native_nothing)    { (void)env; (void)self; (void)args; (void)m; return v_none(); }
-
-IMPL(native_showAlert)
+/* activity.getClassLoader().loadClass("com.defold.iap.IapJNI"): every Defold
+ * extension finds its Java half this way. Unmodelled classes come back as
+ * placeholders whose methods return defaults, which is what "no ads, no store,
+ * no Play services" should look like. */
+IMPL(cl_loadClass)
 {
+    char slash[160];
+    size_t i;
     (void)env; (void)self; (void)m;
-    LOGI("alert: %s: %s", arg_str(args, 0), arg_str(args, 1));
-    return v_none();
+    snprintf(slash, sizeof(slash), "%s", arg_str(args, 0));
+    for (i = 0; slash[i]; i++)
+        if (slash[i] == '.')
+            slash[i] = '/';
+    return v_obj((jobject)jni_find_class(slash));
 }
 
-IMPL(native_getPref)
+static const JMethodDef classloader_methods[] = {
+    { "loadClass", NULL, cl_loadClass },
+    { "findClass", NULL, cl_loadClass },
+    { NULL, NULL, NULL },
+};
+static const JClassDef class_ClassLoader = { "java/lang/ClassLoader", NULL, NULL, classloader_methods, NULL };
+
+static jobject singleton(jobject *slot, const char *cls)
 {
-    char *v = prefs_get(arg_str(args, 0));
-    jvalue r = v_str(v ? v : "");
-    (void)env; (void)self; (void)m;
-    free(v);
-    return r;
+    if (!*slot) {
+        *slot = jni_new_object(jni_find_class(cls));
+        if (*slot)
+            (*slot)->permanent = 1;
+    }
+    return *slot;
 }
 
-IMPL(native_setPref)
+static jobject g_loader, g_appinfo, g_wm, g_display, g_intent, g_resolver;
+
+IMPL(act_getClassLoader)     { (void)env; (void)self; (void)args; (void)m; return v_obj(singleton(&g_loader, "java/lang/ClassLoader")); }
+IMPL(act_getApplicationInfo) { (void)env; (void)self; (void)args; (void)m; return v_obj(singleton(&g_appinfo, "android/content/pm/ApplicationInfo")); }
+IMPL(act_getWindowManager)   { (void)env; (void)self; (void)args; (void)m; return v_obj(singleton(&g_wm, "android/view/WindowManager")); }
+IMPL(act_getIntent)          { (void)env; (void)self; (void)args; (void)m; return v_obj(singleton(&g_intent, "android/content/Intent")); }
+IMPL(act_getContentResolver) { (void)env; (void)self; (void)args; (void)m; return v_obj(singleton(&g_resolver, "android/content/ContentResolver")); }
+IMPL(wm_getDefaultDisplay)   { (void)env; (void)self; (void)args; (void)m; return v_obj(singleton(&g_display, "android/view/Display")); }
+IMPL(disp_refreshRate)       { (void)env; (void)self; (void)args; (void)m; return v_float(60.0f); }
+
+static const JMethodDef defoldactivity_methods[] = {
+    { "getClassLoader", NULL, act_getClassLoader },
+    { "getApplicationInfo", NULL, act_getApplicationInfo },
+    { "getWindowManager", NULL, act_getWindowManager },
+    { "getIntent", NULL, act_getIntent },
+    { "getContentResolver", NULL, act_getContentResolver },
+    { NULL, NULL, NULL },
+};
+static const JClassDef class_NativeActivity =
+    { "android/app/NativeActivity", "android/app/Activity", NULL, defoldactivity_methods, NULL };
+static const JClassDef class_DefoldActivity =
+    { "com/dynamo/android/DefoldActivity", "android/app/NativeActivity", NULL, NULL, NULL };
+
+GETTER(ai_dataDir)   { (void)env; (void)self; (void)f; return v_str(paths_save_nodev()); }
+GETTER(ai_sourceDir) { (void)env; (void)self; (void)f; return v_str(paths_assets_nodev()); }
+
+static const JFieldDef appinfo_fields[] = {
+    { "dataDir", NULL, ai_dataDir },
+    { "sourceDir", NULL, ai_sourceDir },
+    { "publicSourceDir", NULL, ai_sourceDir },
+    { "nativeLibraryDir", NULL, ai_sourceDir },
+    { NULL, NULL, NULL },
+};
+static const JClassDef class_ApplicationInfo =
+    { "android/content/pm/ApplicationInfo", NULL, NULL, NULL, appinfo_fields };
+
+static const JMethodDef wm_methods[] = {
+    { "getDefaultDisplay", NULL, wm_getDefaultDisplay },
+    { NULL, NULL, NULL },
+};
+static const JClassDef class_WindowManager = { "android/view/WindowManager", NULL, NULL, wm_methods, NULL };
+
+static const JMethodDef display_methods[] = {
+    { "getRefreshRate", "()F", disp_refreshRate },
+    { NULL, NULL, NULL },
+};
+static const JClassDef class_Display = { "android/view/Display", NULL, NULL, display_methods, NULL };
+
+/* ---- Defold extensions that answer asynchronously ----
+ *
+ * The game's start-up chain (_services/platform.lua) waits, step by step, for
+ * the Java half of three SDKs to call back into native code:
+ *
+ *   Play Games   GpgsJNI.silentLogin -> gpgsAddToQueue(MSG_SILENT_SIGN_IN, json)
+ *   AppLovin     MaxDefoldPlugin.initialize -> appLovinAddToQueue(
+ *                "OnSdkInitializedEvent", json)
+ *   Play Billing IapGooglePlay.listItems -> IapJNI.nativeOnProductsResult(...)
+ *
+ * With no Java those never come and the loading screen waits forever. So the
+ * answers a phone without Play services / network would give are sent from
+ * here: sign-in failed, ads SDK ready (it never loads an ad), no products.
+ * They are queued and delivered from the main loop (jni_pump), as a Java
+ * thread would, never from inside the call that asked. */
+
+#define GPGS_MSG_SIGN_IN        1   /* values from the extension's LuaInit */
+#define GPGS_MSG_SILENT_SIGN_IN 2
+#define GPGS_STATUS_FAILED      2
+
+typedef void (*GpgsQueueFn)(JNIEnvPtr, jclass, jint, jstring);
+typedef void (*AppLovinQueueFn)(JNIEnvPtr, jclass, jstring, jstring);
+typedef void (*IapProductsFn)(JNIEnvPtr, jobject, jint, jstring, jlong);
+
+static GpgsQueueFn     g_gpgs_queue;
+static AppLovinQueueFn g_applovin_queue;
+static IapProductsFn   g_iap_products;
+static int             g_applovin_ready;
+
+void jni_bind_engine(so_module *m)
 {
-    (void)env; (void)self; (void)m;
-    prefs_set(arg_str(args, 0), arg_str(args, 1));
-    return v_none();
+    g_gpgs_queue = (GpgsQueueFn)so_symbol(m, "Java_com_defold_gpgs_GpgsJNI_gpgsAddToQueue");
+    g_applovin_queue = (AppLovinQueueFn)so_symbol(m, "Java_com_defold_applovin_MaxDefoldPlugin_appLovinAddToQueue");
+    g_iap_products = (IapProductsFn)so_symbol(m, "Java_com_defold_iap_IapJNI_nativeOnProductsResult");
+    LOGI("JNI: SDK callbacks: gpgs %s, applovin %s, iap %s", g_gpgs_queue ? "ok" : "missing",
+         g_applovin_queue ? "ok" : "missing", g_iap_products ? "ok" : "missing");
 }
 
-IMPL(native_clearPref)
+enum { CB_GPGS, CB_APPLOVIN, CB_IAP_PRODUCTS };
+typedef struct { int kind, code; char s1[64]; char s2[160]; jobject obj; jlong ptr; } PendingCb;
+
+static PendingCb g_pending[16];
+static int       g_npending;
+static Mutex     g_pending_lock;
+
+static void post_cb(int kind, int code, const char *s1, const char *s2, jobject obj, jlong ptr)
 {
-    (void)env; (void)self; (void)m;
-    prefs_set(arg_str(args, 0), "");        /* Android version stores "" */
-    return v_none();
+    mutexLock(&g_pending_lock);
+    if (g_npending < (int)(sizeof(g_pending) / sizeof(g_pending[0]))) {
+        PendingCb *p = &g_pending[g_npending++];
+        p->kind = kind;
+        p->code = code;
+        snprintf(p->s1, sizeof(p->s1), "%s", s1 ? s1 : "");
+        snprintf(p->s2, sizeof(p->s2), "%s", s2 ? s2 : "");
+        p->obj = obj ? jni_ref(obj) : NULL;
+        p->ptr = ptr;
+    }
+    mutexUnlock(&g_pending_lock);
 }
 
-/* Launched from a home screen icon, never from a deep link. */
-IMPL(native_no_extras)
+void jni_pump(void)
+{
+    PendingCb run[16];
+    int i, n;
+    JNIEnvPtr env = jni_get_env();
+
+    mutexLock(&g_pending_lock);
+    n = g_npending;
+    memcpy(run, g_pending, sizeof(run[0]) * (size_t)n);
+    g_npending = 0;
+    mutexUnlock(&g_pending_lock);
+
+    for (i = 0; i < n; i++) {
+        PendingCb *p = &run[i];
+        switch (p->kind) {
+        case CB_GPGS:
+            LOGI("JNI: -> gpgs callback %d %s", p->code, p->s2);
+            if (g_gpgs_queue)
+                g_gpgs_queue(env, (jclass)jni_find_class("com/defold/gpgs/GpgsJNI"), p->code, jni_new_string(p->s2));
+            break;
+        case CB_APPLOVIN:
+            LOGI("JNI: -> applovin callback %s %s", p->s1, p->s2);
+            if (g_applovin_queue)
+                g_applovin_queue(env, (jclass)jni_find_class("com/defold/applovin/MaxDefoldPlugin"),
+                                 jni_new_string(p->s1), jni_new_string(p->s2));
+            break;
+        case CB_IAP_PRODUCTS:
+            LOGI("JNI: -> iap products result %d %s", p->code, p->s2);
+            if (g_iap_products)
+                g_iap_products(env, p->obj, p->code, jni_new_string(p->s2), p->ptr);
+            break;
+        }
+        if (p->obj)
+            jni_unref(p->obj);
+    }
+}
+
+IMPL(gpgs_silentLogin)
 {
     (void)env; (void)self; (void)args; (void)m;
-    return v_obj(jni_new_array('L', 0, "java/lang/String"));
-}
-
-static const JMethodDef native_methods[] = {
-    { "initialize", "(Lorg/haxe/lime/HaxeObject;)V", native_initialize },
-    { "vibrate", "(I)V", native_vibrate },
-    { "setText", "(Ljava/lang/String;)V", native_nothing },
-    { "showKeyboard", "()V", native_nothing },
-    { "hideKeyboard", "()V", native_nothing },
-    { "showAlert", "(Ljava/lang/String;Ljava/lang/String;)V", native_showAlert },
-    { "getUserPreference", "(Ljava/lang/String;)Ljava/lang/String;", native_getPref },
-    { "setUserPreference", "(Ljava/lang/String;Ljava/lang/String;)V", native_setPref },
-    { "clearUserPreference", "(Ljava/lang/String;)V", native_clearPref },
-    { "getIntentExtraStrings", "()[Ljava/lang/String;", native_no_extras },
-    { NULL, NULL, NULL },
-};
-static const JClassDef class_Native = { "com/androidnative/Native", NULL, NULL, native_methods, NULL };
-
-/* ---- com.byrobin.admobex.AdMobEx: no ads load, so none ever show ---- */
-
-static jobject g_admob_cb;
-
-IMPL(admob_init)
-{
-    (void)env; (void)self; (void)m;
-    if (args)
-        keep(&g_admob_cb, args[0].l);
-    LOGI("AdMob: not available on this port");
+    post_cb(CB_GPGS, GPGS_MSG_SILENT_SIGN_IN, NULL,
+            "{\"status\":2,\"error\":\"Google Play Games is not available on Nintendo Switch\"}", NULL, 0);
     return v_none();
 }
 
-IMPL(admob_loadInterstitial) { (void)env; (void)self; (void)args; (void)m; post0(g_admob_cb, "onAdmobInterstitialFailed"); return v_none(); }
-IMPL(admob_showBanner)       { (void)env; (void)self; (void)args; (void)m; post0(g_admob_cb, "onAdmobBannerFailed"); return v_none(); }
-IMPL(sdk_nothing)            { (void)env; (void)self; (void)args; (void)m; return v_none(); }
-IMPL(sdk_false)              { (void)env; (void)self; (void)args; (void)m; return v_bool(0); }
-
-static const JMethodDef admob_methods[] = {
-    { "init", NULL, admob_init },
-    { "loadInterstitial", "()V", admob_loadInterstitial },
-    { "showInterstitial", "()V", sdk_nothing },     /* real SDK: no-op unless loaded */
-    { "showBanner", "()V", admob_showBanner },
-    { "hideBanner", "()V", sdk_nothing },
-    { "onResize", "()V", sdk_nothing },
-    { "setBannerPosition", NULL, sdk_nothing },
-    { "setPrivacyURL", NULL, sdk_nothing },
-    { "showConsentForm", NULL, sdk_nothing },
-    { NULL, NULL, NULL },
-};
-static const JClassDef class_AdMobEx = { "com/byrobin/admobex/AdMobEx", NULL, NULL, admob_methods, NULL };
-
-/* ---- com.byrobin.unityads.UnityAdsEx ---- */
-
-static jobject g_unity_cb;
-
-IMPL(unity_init)
-{
-    (void)env; (void)self; (void)m;
-    if (args)
-        keep(&g_unity_cb, args[0].l);
-    LOGI("Unity Ads: not available on this port");
-    return v_none();
-}
-
-IMPL(unity_show) { (void)env; (void)self; (void)args; (void)m; post0(g_unity_cb, "onAdFailedToFetch"); return v_none(); }
-IMPL(unity_load) { (void)env; (void)self; (void)args; (void)m; post0(g_unity_cb, "onAdFailedToFetch"); return v_none(); }
-
-IMPL(unity_setConsent)
-{
-    (void)env; (void)self; (void)m;
-    prefs_set("__hs_unityads_consent", args && args[0].z ? "1" : "0");
-    return v_none();
-}
-
-IMPL(unity_getConsent)
-{
-    char *v = prefs_get("__hs_unityads_consent");
-    int r = v && v[0] == '1';
-    (void)env; (void)self; (void)args; (void)m;
-    free(v);
-    return v_bool(r);
-}
-
-static const JMethodDef unity_methods[] = {
-    { "init", NULL, unity_init },
-    /* This build loads an ad before showing one; report the load failing so
-     * nothing ever reaches showVideo in the first place. */
-    { "loadVideo", NULL, unity_load },
-    { "loadRewarded", NULL, unity_load },
-    { "canShowUnityAds", NULL, sdk_false },
-    { "isSupportedUnityAds", NULL, sdk_false },
-    { "showVideo", NULL, unity_show },
-    { "showRewarded", NULL, unity_show },
-    { "showBanner", NULL, sdk_nothing },
-    { "hideBanner", NULL, sdk_nothing },
-    { "moveBanner", NULL, sdk_nothing },
-    { "destroyBanner", NULL, sdk_nothing },
-    { "setUsersConsent", "(Z)V", unity_setConsent },
-    { "getUsersConsent", "()Z", unity_getConsent },
-    { NULL, NULL, NULL },
-};
-static const JClassDef class_UnityAdsEx = { "com/byrobin/unityads/UnityAdsEx", NULL, NULL, unity_methods, NULL };
-
-/* ---- com.stencyl.GoogleServices.GooglePlayGames: never signed in ---- */
-
-static jobject g_gpg_cb;
-
-IMPL(gpg_init)
-{
-    (void)env; (void)self; (void)m;
-    if (args)
-        keep(&g_gpg_cb, args[0].l);
-    LOGI("Google Play Games: not available on this port");
-    return v_none();
-}
-
-IMPL(gpg_questReward) { (void)env; (void)self; (void)args; (void)m; return v_str(""); }
-
-IMPL(gpg_questList)
+IMPL(gpgs_login)
 {
     (void)env; (void)self; (void)args; (void)m;
-    return v_obj(jni_new_array('L', 0, "java/lang/String"));
-}
-
-static const JMethodDef gpg_methods[] = {
-    { "initGooglePlayGames", NULL, gpg_init },
-    { "signOutGooglePlayGames", NULL, sdk_nothing },
-    { "isSignedIn", NULL, sdk_false },
-    { "isConnecting", NULL, sdk_false },
-    { "hasSignInError", NULL, sdk_false },
-    { "hasUserCancellation", NULL, sdk_false },
-    { "showAchievements", NULL, sdk_nothing },
-    { "unlockAchievement", NULL, sdk_nothing },
-    { "incrementAchievement", NULL, sdk_nothing },
-    { "unlockAchievementImmediate", NULL, sdk_nothing },
-    { "incrementAchievementImmediate", NULL, sdk_nothing },
-    { "showAllLeaderboards", NULL, sdk_nothing },
-    { "showLeaderboard", NULL, sdk_nothing },
-    { "submitScore", NULL, sdk_nothing },
-    { "showQuests", NULL, sdk_nothing },
-    { "updateEvent", NULL, sdk_nothing },
-    { "hasNewQuestCompleted", NULL, sdk_false },
-    { "getQuestReward", NULL, gpg_questReward },
-    { "getCompletedQuestList", NULL, gpg_questList },
-    { NULL, NULL, NULL },
-};
-static const JClassDef class_GooglePlayGames = { "com/stencyl/GoogleServices/GooglePlayGames", NULL, NULL, gpg_methods, NULL };
-
-/* ---- com.stencyl.android.AndroidBilling: the store never starts ---- */
-
-static jobject g_billing_cb;
-
-IMPL(billing_initialize)
-{
-    (void)env; (void)self; (void)m;
-    if (args && m->nargs >= 2)
-        keep(&g_billing_cb, args[1].l);
-    LOGI("Billing: not available on this port, reporting onStarted(Failure)");
-    post_str(g_billing_cb, "onStarted", "Failure");
+    post_cb(CB_GPGS, GPGS_MSG_SIGN_IN, NULL,
+            "{\"status\":2,\"error\":\"Google Play Games is not available on Nintendo Switch\"}", NULL, 0);
     return v_none();
 }
 
-IMPL(billing_buy)
+static const JMethodDef gpgs_methods[] = {
+    { "silentLogin", NULL, gpgs_silentLogin },
+    { "login", NULL, gpgs_login },
+    { NULL, NULL, NULL },
+};
+static const JClassDef class_GpgsJNI = { "com/defold/gpgs/GpgsJNI", NULL, NULL, gpgs_methods, NULL };
+
+IMPL(max_initialize)
 {
-    (void)env; (void)self; (void)m;
-    LOGI("Billing: purchase of '%s' refused", arg_str(args, 0));
-    post_str(g_billing_cb, "onFailedPurchase", arg_str(args, 0));
+    (void)env; (void)self; (void)args; (void)m;
+    g_applovin_ready = 1;
+    post_cb(CB_APPLOVIN, 0, "OnSdkInitializedEvent", "{\"countryCode\":\"US\"}", NULL, 0);
     return v_none();
 }
 
-static const JMethodDef billing_methods[] = {
-    { "initialize", NULL, billing_initialize },
-    { "buy", NULL, billing_buy },
-    { "consume", NULL, sdk_nothing },
-    { "acknowledge", NULL, sdk_nothing },
-    { "restore", NULL, sdk_nothing },
-    { "purchaseInfo", NULL, sdk_nothing },
-    { "release", NULL, sdk_nothing },
+IMPL(max_isInitialized) { (void)env; (void)self; (void)args; (void)m; return v_bool(g_applovin_ready); }
+
+static const JMethodDef max_methods[] = {
+    { "initialize", NULL, max_initialize },
+    { "isInitialized", NULL, max_isInitialized },
     { NULL, NULL, NULL },
 };
-static const JClassDef class_AndroidBilling = { "com/stencyl/android/AndroidBilling", NULL, NULL, billing_methods, NULL };
+static const JClassDef class_MaxDefoldPlugin = { "com/defold/applovin/MaxDefoldPlugin", NULL, NULL, max_methods, NULL };
+
+/* listItems(String ids, IListProductsListener listener, long commandPtr) */
+IMPL(iap_listItems)
+{
+    (void)env; (void)self;
+    if (args && m->nargs >= 3)
+        post_cb(CB_IAP_PRODUCTS, 0, NULL, "{}", args[1].l, args[2].j);   /* OK, no products */
+    return v_none();
+}
+
+static const JMethodDef iap_methods[] = {
+    { "listItems", NULL, iap_listItems },
+    { NULL, NULL, NULL },
+};
+static const JClassDef class_IapGooglePlay = { "com/defold/iap/IapGooglePlay", NULL, NULL, iap_methods, NULL };
+
+/* dmDeviceOpenSL::GetSampleRate asks Java for the output rate. audout is
+ * 48 kHz, so answering that makes the mix need no resampling at all. */
+IMPL(sound_getSampleRate)     { (void)env; (void)self; (void)args; (void)m; return v_int(48000); }
+IMPL(sound_getFramesPerBuffer){ (void)env; (void)self; (void)args; (void)m; return v_int(1024); }
+
+static const JMethodDef sound_methods[] = {
+    { "getSampleRate", NULL, sound_getSampleRate },
+    { "getFramesPerBuffer", NULL, sound_getFramesPerBuffer },
+    { NULL, NULL, NULL },
+};
+static const JClassDef class_DefoldSound = { "com/defold/sound/Sound", NULL, NULL, sound_methods, NULL };
+
+IMPL(secure_getString) { (void)env; (void)self; (void)args; (void)m; return v_str("0123456789abcdef"); }
+
+static const JMethodDef secure_methods[] = {
+    { "getString", NULL, secure_getString },
+    { NULL, NULL, NULL },
+};
+static const JClassDef class_SettingsSecure = { "android/provider/Settings$Secure", NULL, NULL, secure_methods, NULL };
 
 /* ============================================================ registry ==== */
 
@@ -866,9 +752,10 @@ const JClassDef *const jni_class_defs[] = {
     &class_Object, &class_Class, &class_String, &class_CharSequence, &class_Number,
     &class_Boolean, &class_Character, &class_Byte, &class_Short, &class_Integer, &class_Long,
     &class_Float, &class_Double, &class_Throwable, &class_Exception, &class_RuntimeException,
-    &class_HaxeObject, &class_Value, &class_Lime, &class_GameActivity, &class_SDLActivity,
-    &class_MainActivity, &class_Extension, &class_File, &class_Context, &class_Activity,
+    &class_File, &class_Context, &class_Activity,
     &class_Build, &class_BuildVersion, &class_Environment, &class_Locale,
-    &class_Native, &class_AdMobEx, &class_UnityAdsEx, &class_GooglePlayGames, &class_AndroidBilling,
+    &class_ClassLoader, &class_NativeActivity, &class_DefoldActivity, &class_ApplicationInfo,
+    &class_WindowManager, &class_Display, &class_SettingsSecure, &class_DefoldSound,
+    &class_GpgsJNI, &class_MaxDefoldPlugin, &class_IapGooglePlay,
 };
 const int jni_class_def_count = (int)(sizeof(jni_class_defs) / sizeof(jni_class_defs[0]));

@@ -18,8 +18,8 @@
 
 static char g_root[P], g_root_nodev[P];
 static char g_assets[Q], g_assets_nodev[Q], g_save[Q], g_save_nodev[Q];
-static char g_lib_lime[Q], g_lib_app[Q], g_config[Q], g_log[Q];
-static char g_prefs[R], g_sdcard_nodev[R];
+static char g_lib[Q], g_config[Q], g_log[Q];
+static char g_sdcard_nodev[R];
 static char g_tried[1024];
 
 const char *paths_root(void)         { return g_root; }
@@ -27,11 +27,9 @@ const char *paths_assets(void)       { return g_assets; }
 const char *paths_assets_nodev(void) { return g_assets_nodev; }
 const char *paths_save(void)         { return g_save; }
 const char *paths_save_nodev(void)   { return g_save_nodev; }
-const char *paths_lib_lime(void)     { return g_lib_lime; }
-const char *paths_lib_app(void)      { return g_lib_app; }
+const char *paths_lib(void)          { return g_lib; }
 const char *paths_config(void)       { return g_config; }
 const char *paths_log(void)          { return g_log; }
-const char *paths_prefs(void)        { return g_prefs; }
 
 static int exists(const char *p, int want_dir)
 {
@@ -52,21 +50,19 @@ static void strip_device(const char *in, char *out, size_t n)
 /* Does this folder hold the game? If so, remember where everything is. */
 static int layout_ok(const char *dir)
 {
-    char lime[Q], app[Q], assets[Q], probe[R];
+    char lib[Q], assets[Q], probe[R];
 
-    snprintf(lime, sizeof(lime), "%s/lib/liblime.so", dir);
-    snprintf(app, sizeof(app), "%s/lib/libApplicationMain.so", dir);
-    if (!exists(lime, 0) || !exists(app, 0)) {
-        snprintf(lime, sizeof(lime), "%s/liblime.so", dir);
-        snprintf(app, sizeof(app), "%s/libApplicationMain.so", dir);
-        if (!exists(lime, 0) || !exists(app, 0))
+    snprintf(lib, sizeof(lib), "%s/lib/libLevelDevil.so", dir);
+    if (!exists(lib, 0)) {
+        snprintf(lib, sizeof(lib), "%s/libLevelDevil.so", dir);
+        if (!exists(lib, 0))
             return 0;
     }
 
     snprintf(assets, sizeof(assets), "%s/assets", dir);
-    snprintf(probe, sizeof(probe), "%s/manifest/default.json", assets);
+    snprintf(probe, sizeof(probe), "%s/game.projectc", assets);
     if (!exists(probe, 0)) {
-        snprintf(probe, sizeof(probe), "%s/manifest/default.json", dir);
+        snprintf(probe, sizeof(probe), "%s/game.projectc", dir);
         if (!exists(probe, 0))
             return 0;
         snprintf(assets, sizeof(assets), "%s", dir);
@@ -74,12 +70,10 @@ static int layout_ok(const char *dir)
 
     snprintf(g_root, sizeof(g_root), "%s", dir);
     snprintf(g_assets, sizeof(g_assets), "%s", assets);
-    snprintf(g_lib_lime, sizeof(g_lib_lime), "%s", lime);
-    snprintf(g_lib_app, sizeof(g_lib_app), "%s", app);
+    snprintf(g_lib, sizeof(g_lib), "%s", lib);
     snprintf(g_save, sizeof(g_save), "%s/save", g_root);
     snprintf(g_config, sizeof(g_config), "%s/config.txt", g_root);
     snprintf(g_log, sizeof(g_log), "%s/leveldevil.log", g_root);
-    snprintf(g_prefs, sizeof(g_prefs), "%s/prefs.txt", g_save);
     strip_device(g_root, g_root_nodev, sizeof(g_root_nodev));
     strip_device(g_assets, g_assets_nodev, sizeof(g_assets_nodev));
     strip_device(g_save, g_save_nodev, sizeof(g_save_nodev));
@@ -97,10 +91,10 @@ static int try_dir(const char *dir)
 
 int paths_locate(int argc, char **argv, char *err, size_t errlen)
 {
-    static const char *const sub_names[] = { "leveldevil", "leveldevil_nx", "hs" };
+    static const char *const sub_names[] = { "leveldevil", "leveldevil_nx", "level-devil" };
     static const char *const known[] = {
         "sdmc:/switch/leveldevil", "sdmc:/switch/leveldevil_nx",
-        "sdmc:/switch/hs", "sdmc:/leveldevil", "sdmc:/switch",
+        "sdmc:/switch/level-devil", "sdmc:/leveldevil", "sdmc:/switch",
     };
     char dir[P], sub[Q];
     size_t i;
@@ -158,9 +152,8 @@ int paths_locate(int argc, char **argv, char *err, size_t errlen)
     snprintf(err, errlen,
              "The game files were not found.\n\n"
              "Put these next to leveldevil.nro, in any folder:\n"
-             "  liblime.so             (from the APK's lib/arm64-v8a)\n"
-             "  libApplicationMain.so  (same folder in the APK)\n"
-             "  assets                 (the APK's assets folder)\n\n"
+             "  libLevelDevil.so  (split_config.arm64_v8a.apk, lib/arm64-v8a)\n"
+             "  assets            (base.apk's assets folder: game.arcd, ...)\n\n"
              "Looked in:\n%s", g_tried);
     return 0;
 }
@@ -180,13 +173,13 @@ int paths_init(char *err, size_t errlen)
     }
 
     LOGI("paths: game folder %s", g_root);
-    LOGI("paths: liblime %s", g_lib_lime);
+    LOGI("paths: engine %s", g_lib);
     LOGI("paths: assets %s (working directory)", g_assets);
     LOGI("paths: saves %s", g_save_nodev);
 
-    snprintf(probe, sizeof(probe), "%s/assets/data/game.mbs", g_assets);
+    snprintf(probe, sizeof(probe), "%s/game.arcd", g_assets);
     if (!exists(probe, 0))
-        LOGE("paths: %s is missing -- if this is not Level Devil, expect trouble", probe);
+        LOGE("paths: %s is missing -- the game data will not load", probe);
     return 1;
 }
 
@@ -196,12 +189,12 @@ typedef struct { const char *from; const char *to; } PrefixMap;
 static PrefixMap prefixes(size_t i)
 {
     static const char *const from[] = {
-        "/storage/emulated/0/Android/data/" HS_PACKAGE "/files",
-        "/sdcard/Android/data/" HS_PACKAGE "/files",
-        "/data/data/" HS_PACKAGE "/files",
-        "/data/user/0/" HS_PACKAGE "/files",
-        "/data/data/" HS_PACKAGE,
-        "/data/user/0/" HS_PACKAGE,
+        "/storage/emulated/0/Android/data/" PB_PACKAGE "/files",
+        "/sdcard/Android/data/" PB_PACKAGE "/files",
+        "/data/data/" PB_PACKAGE "/files",
+        "/data/user/0/" PB_PACKAGE "/files",
+        "/data/data/" PB_PACKAGE,
+        "/data/user/0/" PB_PACKAGE,
         "/storage/emulated/0",
         "/sdcard",
         "/android_asset",

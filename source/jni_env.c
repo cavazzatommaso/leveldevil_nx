@@ -1144,144 +1144,12 @@ static jobject g_activity;
 jobject jni_activity(void)
 {
     if (!g_activity) {
-        g_activity = jni_new_object(jni_find_class("com/adventureislands/leveldevil/MainActivity"));
+        /* ANativeActivity.clazz: the launcher activity from the manifest. */
+        g_activity = jni_new_object(jni_find_class("com/dynamo/android/DefoldActivity"));
         if (g_activity)
             g_activity->permanent = 1;
     }
     return g_activity;
-}
-
-/* ------------------------------------------------------- UI thread ------ */
-
-typedef void    (*LimeOnCallbackFn)(JNIEnvPtr env, jclass cls, jlong handle);
-typedef jobject (*LimeCallObjectFn)(JNIEnvPtr env, jclass cls, jlong handle, jstring fn, jobjectArray args);
-
-static LimeOnCallbackFn g_lime_on_callback;
-static LimeCallObjectFn g_lime_call_object;
-static JClass          *g_lime_class;
-
-enum { TASK_ON_CALLBACK = 1, TASK_HAXE_CALL };
-
-typedef struct UiTask {
-    int            kind;
-    jlong          handle;
-    jobject        haxeobj;
-    char           function[64];
-    int            nargs;
-    jobject        args[4];
-    struct UiTask *next;
-} UiTask;
-
-static Mutex   g_ui_lock;
-static CondVar g_ui_cv;
-static UiTask *g_ui_head, *g_ui_tail;
-static Thread  g_ui_thread;
-static int     g_ui_started;
-
-static void ui_run(UiTask *t)
-{
-    JNIEnvPtr env = jni_get_env();
-    if (t->kind == TASK_ON_CALLBACK) {
-        if (g_lime_on_callback) {
-            LOGD("ui: Lime.onCallback(%lld)", (long long)t->handle);
-            g_lime_on_callback(env, (jclass)g_lime_class, t->handle);
-        }
-        return;
-    }
-    if (t->kind == TASK_HAXE_CALL) {
-        JField *hf = jni_field(jni_find_class("org/haxe/lime/HaxeObject"), "__haxeHandle", "J", 0);
-        jlong handle = jni_get_field(t->haxeobj, hf).j;
-        jstring fn = jni_new_string(t->function);
-        jobjectArray arr = jni_new_array('L', t->nargs, "java/lang/Object");
-        int i;
-        if (arr)
-            for (i = 0; i < t->nargs; i++)
-                ((jobject *)arr->u.arr.data)[i] = jni_ref(t->args[i]);
-        if (handle && g_lime_call_object) {
-            jobject r;
-            LOGI("ui: calling Haxe %s(%d args)", t->function, t->nargs);
-            r = g_lime_call_object(env, (jclass)g_lime_class, handle, fn, arr);
-            jni_unref(r);
-        } else {
-            LOGI("ui: dropped Haxe callback %s (no handle)", t->function);
-        }
-        jni_unref(fn);
-        jni_unref(arr);
-        for (i = 0; i < t->nargs; i++)
-            jni_unref(t->args[i]);
-        jni_unref(t->haxeobj);
-    }
-}
-
-static void ui_main(void *arg)
-{
-    (void)arg;
-    for (;;) {
-        UiTask *t;
-        mutexLock(&g_ui_lock);
-        while (!g_ui_head)
-            condvarWaitTimeout(&g_ui_cv, &g_ui_lock, 100000000ULL);
-        t = g_ui_head;
-        g_ui_head = t->next;
-        if (!g_ui_head)
-            g_ui_tail = NULL;
-        mutexUnlock(&g_ui_lock);
-        ui_run(t);
-        free(t);
-    }
-}
-
-static void ui_enqueue(UiTask *t)
-{
-    mutexLock(&g_ui_lock);
-    if (!g_ui_started) {
-        Result rc = threadCreate(&g_ui_thread, ui_main, NULL, NULL, 4 * 1024 * 1024, 0x2C, -2);
-        if (R_SUCCEEDED(rc))
-            rc = threadStart(&g_ui_thread);
-        if (R_FAILED(rc))
-            LOGE("ui: could not start the UI thread (0x%x)", rc);
-        g_ui_started = 1;
-    }
-    if (g_ui_tail)
-        g_ui_tail->next = t;
-    else
-        g_ui_head = t;
-    g_ui_tail = t;
-    condvarWakeOne(&g_ui_cv);
-    mutexUnlock(&g_ui_lock);
-}
-
-void jni_post_ui_callback(jlong handle)
-{
-    UiTask *t = calloc(1, sizeof(*t));
-    if (!t)
-        return;
-    t->kind = TASK_ON_CALLBACK;
-    t->handle = handle;
-    ui_enqueue(t);
-}
-
-void jni_post_haxe_call(jobject haxeobj, const char *function, int nargs, jobject *args)
-{
-    UiTask *t;
-    int i;
-    if (!jni_valid(haxeobj)) {
-        for (i = 0; i < nargs; i++)
-            jni_unref(args[i]);
-        return;
-    }
-    t = calloc(1, sizeof(*t));
-    if (!t)
-        return;
-    t->kind = TASK_HAXE_CALL;
-    t->haxeobj = jni_ref(haxeobj);
-    snprintf(t->function, sizeof(t->function), "%s", function);
-    t->nargs = nargs > 4 ? 4 : nargs;
-    for (i = 0; i < t->nargs; i++)
-        t->args[i] = args[i];
-    for (; i < nargs; i++)
-        jni_unref(args[i]);
-    ui_enqueue(t);
 }
 
 /* ----------------------------------------------------------- lifecycle -- */
@@ -1297,15 +1165,4 @@ void jni_init(void)
     jni_activity();
     LOGI("JNI: %d table slots, %d modelled classes",
          (int)(sizeof(g_jni_table) / sizeof(g_jni_table[0])), jni_class_def_count);
-}
-
-void jni_bind_lime(so_module *lime)
-{
-    g_lime_class = jni_find_class("org/haxe/lime/Lime");
-    g_lime_on_callback = (LimeOnCallbackFn)so_symbol(lime, "Java_org_haxe_lime_Lime_onCallback");
-    g_lime_call_object = (LimeCallObjectFn)so_symbol(lime, "Java_org_haxe_lime_Lime_callObjectFunction");
-    if (!g_lime_on_callback || !g_lime_call_object)
-        LOGE("JNI: Lime callback natives not found; Java-to-Haxe callbacks disabled");
-    else
-        LOGI("JNI: Lime callbacks bound");
 }

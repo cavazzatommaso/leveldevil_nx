@@ -15,8 +15,8 @@
  *
  * MIT licensed, see LICENSE.
  */
-#ifndef HS_NX_POINTER_H
-#define HS_NX_POINTER_H
+#ifndef PB_NX_POINTER_H
+#define PB_NX_POINTER_H
 
 /* Call once before the game starts: reads cursor.png from the game folder.
  * Decoding and the GL upload happen lazily on the render thread. */
