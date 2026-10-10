@@ -170,7 +170,7 @@ static int apply(const char *key, const char *val)
     if (!strcmp(key, "log_level"))         { g_cfg.log_level = clamp(atoi(val), 0, 2); return 1; }
     if (!strcmp(key, "touch"))             { g_cfg.touch = atoi(val) != 0; return 1; }
     if (!strcmp(key, "exit_combo"))        { g_cfg.exit_combo = atoi(val) != 0; return 1; }
-    if (!strcmp(key, "frame_stats"))       { g_cfg.frame_stats = atoi(val) != 0; return 1; }
+    if (!strcmp(key, "frame_stats"))       { g_cfg.frame_stats = clamp(atoi(val), 0, 2); return 1; }
     if (!strcmp(key, "stick_deadzone"))    { g_cfg.stick_deadzone = clamp(atoi(val), 0, 30000); return 1; }
     if (!strcmp(key, "game_stack_mb"))     { g_cfg.game_stack_mb = clamp(atoi(val), 1, 64); return 1; }
     if (!strcmp(key, "game_core"))         { g_cfg.game_core = clamp(atoi(val), -1, 3); return 1; }

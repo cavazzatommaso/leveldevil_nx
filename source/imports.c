@@ -27,6 +27,7 @@
 #include "looper.h"
 #include "native_activity.h"
 #include "opensl.h"
+#include "prof.h"
 #include "nativewindow.h"
 #include "log.h"
 
@@ -585,7 +586,9 @@ static ImportEntry g_imports[] = {
     /* ---- OpenGL ES (gl_imports.h) ---- */
 #define GLR(name) { #name, (uintptr_t)&name },
 #define GLS(name) { #name, (uintptr_t)&ax_##name },
+#define GLP(name) { #name, (uintptr_t)&px_##name },
 #include "gl_imports.h"
+#undef GLP
 #undef GLR
 #undef GLS
 };

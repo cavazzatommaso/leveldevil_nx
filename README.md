@@ -57,13 +57,19 @@ Joy-Con), to choose one or two players and pair or split Joy-Cons.
 
 Everything is remappable in `config.txt`. `log_level = 1` writes
 `leveldevil.log` next to the `.nro`; `frame_stats = 1` adds an fps line every
-5 seconds.
+5 seconds, `frame_stats = 2` also explains every slow frame (time spent in
+the engine, the swap, shader compiles, uploads, file I/O).
 
 ## Notes
 
-- Gameplay runs at 60 fps. Loading a level pauses for about a second: LuaJIT
-  runs as an interpreter, because homebrew heap memory can't be made
-  executable, so its JIT is refused and it falls back cleanly.
+- Gameplay runs at 60 fps. Saves (the game writes one on every death and
+  level change) go to memory and reach the SD card from a background thread,
+  so they never stall a frame. Pending saves are written before exit.
+- LuaJIT runs as an interpreter, because homebrew heap memory can't be made
+  executable, so its JIT is refused and it falls back cleanly. That costs a
+  short pause on level load and the odd 1-2 frame hitch when a lot happens.
+  With [sys-clk](https://github.com/retronx-team/sys-clk), setting the CPU to
+  1785 MHz for the game shortens both (loads ~0.6 s).
 - Ads, IAP, Firebase and Play Games live on the Java side. The port answers
   the way a phone without Play services would: sign-in fails, the ads SDK
   reports ready but never loads an ad, the store has no products.
@@ -75,3 +81,6 @@ devkitA64 with `switch-dev switch-mesa switch-libdrm_nouveau switch-libpng switc
 ```
 docker run --rm -v "$PWD":/src -w /src devkitpro/devkita64 make
 ```
+
+`tests/savecache_test.c` checks the save cache on a desktop:
+`cd tests && cc -Ifake -I../source savecache_test.c ../source/savecache.c -lpthread && ./a.out`

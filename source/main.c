@@ -32,6 +32,7 @@
 #include "nativewindow.h"
 #include "nx_pointer.h"
 #include "paths.h"
+#include "savecache.h"
 #include "so_util.h"
 #include "tls.h"
 #include "watchdog.h"
@@ -66,6 +67,7 @@ static void terminate(int code) __attribute__((noreturn));
 static void terminate(int code)
 {
     LOGI("exit (code %d) after %.1f s", code, pb_uptime());
+    savecache_flush();
     watchdog_stop();
     log_flush();
     svcExitProcess();

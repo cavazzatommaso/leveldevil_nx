@@ -25,6 +25,8 @@
 #include "looper.h"
 #include "log.h"
 #include "paths.h"
+#include "prof.h"
+#include "savecache.h"
 
 char bx_sF[3 * BIONIC_FILE_SIZE];
 
@@ -136,8 +138,25 @@ FILE *bx_fopen(const char *path, const char *mode)
         errno = LX_ENOENT;
         return NULL;
     }
+    /* save/: writes go to memory and reach the card from a background
+     * thread, so the game's save never stalls a frame (savecache.c). */
+    if (savecache_handles(p) && !strchr(mode, '+')) {
+        if (mode[0] == 'w') {
+            f = savecache_open_write(p);
+            if (f)
+                return f;
+        } else if (mode[0] == 'r') {
+            int c = savecache_stat(p, NULL);
+            if (c < 0) {
+                errno = LX_ENOENT;
+                return NULL;
+            }
+            if (c > 0 && (f = savecache_open_read(p)) != NULL)
+                return f;
+        }
+    }
     filter_mode(mode, m, sizeof(m));
-    f = fopen(p, m);
+    f = PX_FILE_OP(fopen(p, m));
     if (!f) {
         int e = errno;
         bx_fix_errno();
@@ -163,9 +182,12 @@ FILE *bx_fdopen(int fd, const char *mode)
 
 int bx_fclose(FILE *f)
 {
+    int r;
+    if (f && savecache_close(f, &r))
+        return r;
     if (!f || std_index(f) >= 0)
         return 0;
-    return fclose(f);
+    return PX_FILE_OP(fclose(f));
 }
 
 size_t bx_fread(void *p, size_t sz, size_t n, FILE *f)
@@ -184,7 +206,7 @@ size_t bx_fwrite(const void *p, size_t sz, size_t n, FILE *f)
     }
     if (!f || i == 0)
         return 0;
-    return fwrite(p, sz, n, f);
+    return PX_FILE_OP(fwrite(p, sz, n, f));
 }
 
 int bx_fseek(FILE *f, long off, int whence)
@@ -207,7 +229,7 @@ int bx_fflush(FILE *f)
 {
     if (f && std_index(f) >= 0)
         return 0;
-    return fflush(f);
+    return PX_FILE_OP(fflush(f));
 }
 
 int bx_feof(FILE *f)     { return (!f || std_index(f) >= 0) ? (std_index(f) == 0) : feof(f); }
@@ -473,7 +495,23 @@ int bx_stat(const char *path, struct bionic_stat *st)
         return -1;
     }
     path_translate(path, p, sizeof(p));
-    if (stat(p, &s) != 0) {
+    if (savecache_handles(p)) {
+        size_t size = 0;
+        int c = savecache_stat(p, &size);
+        if (c < 0) {
+            errno = LX_ENOENT;
+            return -1;
+        }
+        if (c > 0) {
+            memset(&s, 0, sizeof(s));
+            s.st_mode = S_IFREG | 0666;
+            s.st_size = (off_t)size;
+            s.st_nlink = 1;
+            conv_stat(&s, st);
+            return 0;
+        }
+    }
+    if (PX_FILE_OP(stat(p, &s)) != 0) {
         bx_fix_errno();
         return -1;
     }
@@ -491,6 +529,15 @@ int bx_access(const char *path, int mode)
         return -1;
     }
     path_translate(path, p, sizeof(p));
+    if (savecache_handles(p)) {
+        int c = savecache_stat(p, NULL);
+        if (c > 0)
+            return 0;
+        if (c < 0) {
+            errno = LX_ENOENT;
+            return -1;
+        }
+    }
     /* Horizon's access() is unreliable on files open for writing; stat is not */
     if (stat(p, &s) != 0) {
         bx_fix_errno();
@@ -611,16 +658,31 @@ int bx_closedir(void *dirp)
             return -1;                                       \
         }                                                    \
         path_translate(path, p, sizeof(p));                  \
-        r = call;                                            \
+        r = PX_FILE_OP(call);                                \
         if (r != 0)                                          \
             bx_fix_errno();                                  \
         LOGD(#fn "(%s) = %d", p, r);                         \
         return r;                                            \
     }
 
+/* A file the save cache holds is deleted in the cache (the writer removes it
+ * from the card); -1 means the cache already knows it is gone. */
+static int cached_unlink(const char *p)
+{
+    int c;
+    if (!savecache_handles(p) || (c = savecache_stat(p, NULL)) == 0)
+        return 1;                                   /* not ours */
+    if (c < 0) {
+        errno = LX_ENOENT;
+        return -1;
+    }
+    savecache_unlink(p);
+    return 0;
+}
+
 PATH_OP1(rmdir, rmdir(p))
-PATH_OP1(unlink, unlink(p))
-PATH_OP1(remove, remove(p))
+PATH_OP1(unlink, (r = cached_unlink(p)) != 1 ? r : unlink(p))
+PATH_OP1(remove, (r = cached_unlink(p)) != 1 ? r : remove(p))
 PATH_OP1(chdir, chdir(p))
 
 int bx_mkdir(const char *path, unsigned mode)
@@ -632,7 +694,7 @@ int bx_mkdir(const char *path, unsigned mode)
         return -1;
     }
     path_translate(path, p, sizeof(p));
-    r = mkdir(p, (mode_t)mode);
+    r = PX_FILE_OP(mkdir(p, (mode_t)mode));
     if (r != 0)
         bx_fix_errno();
     LOGD("mkdir(%s) = %d", p, r);
@@ -649,13 +711,15 @@ int bx_rename(const char *a, const char *b)
     }
     path_translate(a, pa, sizeof(pa));
     path_translate(b, pb, sizeof(pb));
-    r = rename(pa, pb);
+    if (savecache_handles(pa) && savecache_handles(pb) && savecache_rename(pa, pb))
+        return 0;
+    r = PX_FILE_OP(rename(pa, pb));
     if (r != 0) {
         /* FAT/exFAT via fsdev refuses to rename over an existing file;
          * Android's rename replaces it. SharedObject saves rely on that. */
         struct stat st;
-        if (stat(pb, &st) == 0 && S_ISREG(st.st_mode) && unlink(pb) == 0)
-            r = rename(pa, pb);
+        if (PX_FILE_OP(stat(pb, &st)) == 0 && S_ISREG(st.st_mode) && PX_FILE_OP(unlink(pb)) == 0)
+            r = PX_FILE_OP(rename(pa, pb));
         if (r != 0)
             bx_fix_errno();
     }
@@ -744,7 +808,21 @@ typedef struct MapEnt {
 static MapEnt *g_maps;
 static Mutex g_maps_lock;
 
+static void *mmap_impl(void *addr, size_t len, int prot, int flags, int fd, long off);
+
 void *bx_mmap(void *addr, size_t len, int prot, int flags, int fd, long off)
+{
+    uint64_t t0;
+    void *r;
+    if (!prof_on())
+        return mmap_impl(addr, len, prot, flags, fd, off);
+    t0 = prof_now();
+    r = mmap_impl(addr, len, prot, flags, fd, off);
+    prof_add(addr ? PX_MMAP_HINT : PX_MMAP, t0, len);
+    return r;
+}
+
+static void *mmap_impl(void *addr, size_t len, int prot, int flags, int fd, long off)
 {
     size_t alen;
     void *mem;

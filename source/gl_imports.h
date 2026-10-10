@@ -1,11 +1,17 @@
-/* gl_imports.h -- every GL entry point liblime.so imports. GENERATED from
- * the import table of liblime.so; see tools/check_imports.py.
+/* gl_imports.h -- the GL entry points the engine imports (originally
+ * generated from liblime.so's import table; libLevelDevil.so's GL imports
+ * are a subset, plus the two OES VAO calls in bionic_defold.c).
  *
  * GLR: OpenGL ES 2.0 core, resolved to switch-mesa's libGLESv2.
- * GLS: OpenGL ES 1.x and OES_* entry points. Only SDL's GLES1 renderer
- *      references them, and that renderer is never selected (Lime renders
- *      with its own GLES2 context), so they are logged no-op stubs.
+ * GLS: OpenGL ES 1.x and OES_* entry points switch-mesa does not export;
+ *      logged no-op stubs.
+ * GLP: core entry points that go through a timing wrapper (prof.c, px_*)
+ *      for frame_stats = 2. Includers that do not care get GLR.
  */
+#ifndef GLP
+#define GLP(name) GLR(name)
+#define GLP_DEFAULTED
+#endif
 GLR(glActiveTexture)
 GLR(glAttachShader)
 GLR(glBindAttribLocation)
@@ -22,8 +28,8 @@ GLS(glBlendEquationSeparateOES)
 GLR(glBlendFunc)
 GLR(glBlendFuncSeparate)
 GLS(glBlendFuncSeparateOES)
-GLR(glBufferData)
-GLR(glBufferSubData)
+GLP(glBufferData)
+GLP(glBufferSubData)
 GLR(glCheckFramebufferStatus)
 GLS(glCheckFramebufferStatusOES)
 GLR(glClear)
@@ -32,8 +38,8 @@ GLR(glClearDepthf)
 GLR(glClearStencil)
 GLS(glColor4f)
 GLR(glColorMask)
-GLR(glCompileShader)
-GLR(glCompressedTexImage2D)
+GLP(glCompileShader)
+GLP(glCompressedTexImage2D)
 GLR(glCompressedTexSubImage2D)
 GLR(glCopyTexImage2D)
 GLR(glCopyTexSubImage2D)
@@ -107,7 +113,7 @@ GLR(glIsRenderbuffer)
 GLR(glIsShader)
 GLR(glIsTexture)
 GLR(glLineWidth)
-GLR(glLinkProgram)
+GLP(glLinkProgram)
 GLS(glLoadIdentity)
 GLS(glMatrixMode)
 GLS(glOrthof)
@@ -129,11 +135,11 @@ GLR(glStencilOp)
 GLR(glStencilOpSeparate)
 GLS(glTexCoordPointer)
 GLS(glTexEnvf)
-GLR(glTexImage2D)
+GLP(glTexImage2D)
 GLR(glTexParameterf)
 GLR(glTexParameteri)
 GLR(glTexParameteriv)
-GLR(glTexSubImage2D)
+GLP(glTexSubImage2D)
 GLS(glTranslatef)
 GLR(glUniform1f)
 GLR(glUniform1fv)
@@ -167,3 +173,8 @@ GLR(glVertexAttrib4fv)
 GLR(glVertexAttribPointer)
 GLS(glVertexPointer)
 GLR(glViewport)
+
+#ifdef GLP_DEFAULTED
+#undef GLP
+#undef GLP_DEFAULTED
+#endif

@@ -35,6 +35,7 @@
 #include "log.h"
 #include "nativewindow.h"
 #include "nx_pointer.h"
+#include "prof.h"
 #include "watchdog.h"
 
 /* android/native_window.h */
@@ -240,15 +241,20 @@ void pbnw_frame_stats(unsigned *slow, unsigned *worst_ms)
 EGLBoolean pbnw_egl_swap_buffers(EGLDisplay dpy, EGLSurface surface)
 {
     EGLBoolean ok;
+    u64 swap_start;
 
     /* The game's context is current on this thread and the frame is finished,
      * so this is the one moment the cursor can be drawn over it. */
     nxp_draw();
 
+    swap_start = armGetSystemTick();
     ok = eglSwapBuffers(dpy, surface);
     if (ok) {
         if (g_cfg.frame_stats) {
             u64 now = armGetSystemTick();
+            if (g_last_swap)
+                prof_frame(armTicksToNs(swap_start - g_last_swap) / 1000,
+                           armTicksToNs(now - swap_start) / 1000);
             if (g_last_swap) {
                 u64 us = armTicksToNs(now - g_last_swap) / 1000;
                 if (us > 20000) g_slow++;

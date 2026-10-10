@@ -34,6 +34,7 @@
 #include "assetmgr.h"
 #include "log.h"
 #include "paths.h"
+#include "prof.h"
 
 #define AASSET_MODE_UNKNOWN   0
 #define AASSET_MODE_RANDOM    1
@@ -174,10 +175,13 @@ int ax_AAsset_read(void *asset, void *buf, size_t count)
 {
     PbAsset *a = asset;
     size_t n;
+    uint64_t t0 = prof_on() ? prof_now() : 0;
 
     if (!a || !buf)
         return -1;
     n = fread(buf, 1, count, a->fp);
+    if (t0)
+        prof_add(PX_ASSET, t0, n);
     if (n == 0 && ferror(a->fp))
         return -1;
     return (int)n;
