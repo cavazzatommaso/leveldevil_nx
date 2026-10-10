@@ -29,10 +29,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <switch.h>
 
 #include "android_stubs.h"
 #include "assetmgr.h"
 #include "log.h"
+#include "arcpatch.h"
+#include "config.h"
 #include "paths.h"
 #include "prof.h"
 
@@ -49,8 +52,63 @@ typedef struct {
     FILE    *fp;
     long     length;
     void    *buffer;          /* AAsset_getBuffer: the whole file, read once */
+    const uint8_t *mem;       /* or: served from memory (the patched archive) */
+    long     pos;
     char     name[256];
 } PbAsset;
+
+static void  normalize(const char *in, char *out, size_t outlen);
+static FILE *open_asset(const char *name, char *chosen, size_t chosenlen);
+
+/* ---------------------------------------- the patched archive (arcpatch) */
+/* With touch_buttons = 0 the engine is handed game.arci/game.arcd with the
+ * on-screen arrow images made invisible (arcpatch.c). Built
+ * once, on the first open of either file, and kept for the whole run. */
+static Mutex    g_patch_lock;
+static int      g_patch_state;        /* 0 not tried, 1 ready, -1 serve originals */
+static ArcPatch g_patch;
+
+static uint8_t *read_whole(const char *name, size_t *len)
+{
+    char chosen[1024];
+    FILE *fp = open_asset(name, chosen, sizeof(chosen));
+    uint8_t *b = NULL;
+    long n;
+    if (!fp)
+        return NULL;
+    fseek(fp, 0, SEEK_END);
+    n = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (n > 0 && (b = malloc((size_t)n)) != NULL && fread(b, 1, (size_t)n, fp) != (size_t)n) {
+        free(b);
+        b = NULL;
+    }
+    fclose(fp);
+    *len = (size_t)n;
+    return b;
+}
+
+static int patched_archive(void)
+{
+    mutexLock(&g_patch_lock);
+    if (!g_patch_state) {
+        size_t il = 0, dl = 0;
+        uint8_t *arci = read_whole("game.arci", &il), *arcd = read_whole("game.arcd", &dl);
+        char why[128] = "could not read the archive";
+        g_patch_state = -1;
+        if (arci && arcd && arcpatch_hide_touch_buttons(arci, il, arcd, dl, &g_patch, why, sizeof(why))) {
+            g_patch_state = 1;
+            LOGI("assets: on-screen arrows hidden (%d images in %d scenes, patched in memory)",
+                 g_patch.constants, g_patch.entries);
+        } else {
+            LOGI("assets: could not hide the on-screen buttons: %s", why);
+        }
+        free(arci);
+        free(arcd);
+    }
+    mutexUnlock(&g_patch_lock);
+    return g_patch_state == 1;
+}
 
 /* ------------------------------------------------------------ naming ---- */
 
@@ -99,7 +157,7 @@ static void normalize(const char *in, char *out, size_t outlen)
 /* Try the candidates in order; returns an open FILE* or NULL. */
 static FILE *open_asset(const char *name, char *chosen, size_t chosenlen)
 {
-    char clean[1024], full[1024];
+    char clean[1024], full[2048];
     const char *roots[2];
     int r;
 
@@ -125,7 +183,9 @@ static FILE *open_asset(const char *name, char *chosen, size_t chosenlen)
             snprintf(full, sizeof(full), "%s/%s", roots[r], rel);
             fp = fopen(full, "rb");
             if (fp) {
-                snprintf(chosen, chosenlen, "%s", full);
+                size_t n = strlen(full) < chosenlen ? strlen(full) : chosenlen - 1;
+                memcpy(chosen, full, n);         /* for the log only */
+                chosen[n] = '\0';
                 return fp;
             }
         }
@@ -150,6 +210,22 @@ void *ax_AAssetManager_open(void *mgr, const char *filename, int mode)
     (void)mgr; (void)mode;
     if (!filename)
         return NULL;
+
+    if (!g_cfg.touch_buttons) {
+        char clean[256];
+        normalize(filename, clean, sizeof(clean));
+        if ((!strcmp(clean, "game.arci") || !strcmp(clean, "game.arcd")) && patched_archive()) {
+            int is_index = !strcmp(clean, "game.arci");
+            a = calloc(1, sizeof(*a));
+            if (!a)
+                return NULL;
+            a->mem = is_index ? g_patch.arci : g_patch.arcd;
+            a->length = (long)(is_index ? g_patch.arci_len : g_patch.arcd_len);
+            snprintf(a->name, sizeof(a->name), "%s", filename);
+            LOGD("assets: open %s -> patched archive in memory (%ld bytes)", filename, a->length);
+            return a;
+        }
+    }
 
     fp = open_asset(filename, chosen, sizeof(chosen));
     if (!fp) {
@@ -179,6 +255,14 @@ int ax_AAsset_read(void *asset, void *buf, size_t count)
 
     if (!a || !buf)
         return -1;
+    if (a->mem) {
+        n = a->pos < a->length ? (size_t)(a->length - a->pos) : 0;
+        if (n > count)
+            n = count;
+        memcpy(buf, a->mem + a->pos, n);
+        a->pos += (long)n;
+        return (int)n;
+    }
     n = fread(buf, 1, count, a->fp);
     if (t0)
         prof_add(PX_ASSET, t0, n);
@@ -193,6 +277,13 @@ int64_t ax_AAsset_seek64(void *asset, int64_t offset, int whence)
 
     if (!a)
         return -1;
+    if (a->mem) {
+        int64_t p = whence == SEEK_SET ? offset : whence == SEEK_CUR ? a->pos + offset : a->length + offset;
+        if (p < 0 || p > a->length)
+            return -1;
+        a->pos = (long)p;
+        return p;
+    }
     if (fseek(a->fp, (long)offset, whence) != 0)
         return -1;
     return (int64_t)ftell(a->fp);
@@ -245,6 +336,8 @@ const void *ax_AAsset_getBuffer(void *asset)
 {
     PbAsset *a = asset;
     long pos;
+    if (a && a->mem)
+        return a->mem;
     if (!a || !a->fp)
         return NULL;
     if (a->buffer)

@@ -52,6 +52,7 @@ typedef struct {
     /* fixed at build time */
     int stick_deadzone;
     int touch;
+    int touch_buttons;       /* 0: hide the game's on-screen buttons  */
     int exit_combo;
     int dpi;
     int game_stack_mb;

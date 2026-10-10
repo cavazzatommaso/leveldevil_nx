@@ -35,6 +35,7 @@ void config_defaults(void)
 
     g_cfg.stick_deadzone = 5000;
     g_cfg.touch = 1;
+    g_cfg.touch_buttons = 0;           /* controllers: no on-screen arrows */
     g_cfg.exit_combo = 0;              /* no quit chord: use HOME */
     g_cfg.dpi = 160;
     g_cfg.game_stack_mb = 16;
@@ -75,6 +76,11 @@ static const char DEFAULT_FILE[] =
 "\n"
 "cursor = 1\n"
 "cursor_speed = 900\n"
+"\n"
+"# The game's on-screen left/right/jump buttons: 0 hides them (play with a\n"
+"# controller), 1 shows them as on a phone, for playing by touch.\n"
+"\n"
+"touch_buttons = 0\n"
 "\n"
 "# auto follows the dock (720p handheld, 1080p docked); 720 or 1080 pins it.\n"
 "\n"
@@ -167,6 +173,7 @@ static int apply(const char *key, const char *val)
     }
     if (!strcmp(key, "cursor"))            { g_cfg.cursor = atoi(val) != 0; return 1; }
     if (!strcmp(key, "cursor_speed"))      { g_cfg.cursor_speed = clamp(atoi(val), 100, 4000); return 1; }
+    if (!strcmp(key, "touch_buttons"))     { g_cfg.touch_buttons = atoi(val) != 0; return 1; }
     if (!strcmp(key, "log_level"))         { g_cfg.log_level = clamp(atoi(val), 0, 2); return 1; }
     if (!strcmp(key, "touch"))             { g_cfg.touch = atoi(val) != 0; return 1; }
     if (!strcmp(key, "exit_combo"))        { g_cfg.exit_combo = atoi(val) != 0; return 1; }

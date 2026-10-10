@@ -55,6 +55,13 @@ The system **Controllers** screen opens when the Joy-Cons are taken off the
 console, and whenever L + R is held for a second (SL + SR on a sideways
 Joy-Con), to choose one or two players and pair or split Joy-Cons.
 
+### On-screen buttons
+
+The Android game always shows its touch arrows, and has no option to turn
+them off. `touch_buttons = 0` (the default) hides them: the port makes the
+arrow images invisible in memory, while the buttons' logic keeps running as
+on a phone. Set `touch_buttons = 1` to show them for playing by touch.
+
 Everything is remappable in `config.txt`. `log_level = 1` writes
 `leveldevil.log` next to the `.nro`; `frame_stats = 1` adds an fps line every
 5 seconds, `frame_stats = 2` also explains every slow frame (time spent in
@@ -82,5 +89,13 @@ devkitA64 with `switch-dev switch-mesa switch-libdrm_nouveau switch-libpng switc
 docker run --rm -v "$PWD":/src -w /src devkitpro/devkita64 make
 ```
 
-`tests/savecache_test.c` checks the save cache on a desktop:
-`cd tests && cc -Ifake -I../source savecache_test.c ../source/savecache.c -lpthread && ./a.out`
+Desktop checks in `tests/`:
+
+```
+cd tests
+cc -Ifake -I../source savecache_test.c ../source/savecache.c -lpthread && ./a.out
+cc -I../source arcpatch_test.c ../source/arcpatch.c && ./a.out <your assets folder> /tmp
+```
+
+The second one needs your own copy of the game's `assets/` (it is skipped
+without it).
